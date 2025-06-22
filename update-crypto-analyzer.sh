@@ -6,7 +6,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}Updating Crypto Price Analyzer with CORS proxy fix...${NC}"
+echo -e "${YELLOW}Updating Crypto Price Analyzer with CORS proxy fix and price display fix...${NC}"
 
 # Check if the project directory exists
 PROJECT_DIR="crypto-analyzer-app"
@@ -43,6 +43,11 @@ export default defineConfig({
 EOL
 
 echo -e "${GREEN}Update complete!${NC}"
+echo -e "${YELLOW}Note: This update includes the following improvements:${NC}"
+echo -e "  ${GREEN}1. CORS errors when calling the CoinGecko API${NC}"
+echo -e "  ${GREEN}2. Incorrect (too high) cryptocurrency prices${NC}"
+echo -e "  ${GREEN}3. Improved XRP/BTC ratio precision in charts and display${NC}"
+echo -e "  ${GREEN}4. Added current price as the final point on the graphs${NC}"
 echo -e "${YELLOW}To start the application, run:${NC}"
 echo -e "${GREEN}cd ${PROJECT_DIR} && ./start.sh${NC}"
 echo -e "${YELLOW}The application will be available at:${NC} ${GREEN}http://localhost:8080${NC}"

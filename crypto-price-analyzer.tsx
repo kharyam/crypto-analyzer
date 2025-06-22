@@ -4,9 +4,24 @@ import { TrendingUp, TrendingDown, AlertCircle, RefreshCw } from 'lucide-react';
 
 const CryptoPriceAnalyzer = () => {
   const [data, setData] = useState([]);
+  const [currentPrices, setCurrentPrices] = useState({
+    bitcoin: { usd: 0 },
+    ethereum: { usd: 0 },
+    ripple: { usd: 0 }
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
+
+  // Clear all cache data
+  const clearCache = () => {
+    localStorage.removeItem('crypto-analyzer-current-prices');
+    localStorage.removeItem('crypto-analyzer-market-data');
+    localStorage.removeItem('crypto-analyzer-btc-historical');
+    localStorage.removeItem('crypto-analyzer-eth-historical');
+    localStorage.removeItem('crypto-analyzer-xrp-historical');
+    console.log('Cache cleared');
+  };
 
   // Helper function for API calls with caching and retry logic
   const fetchWithCache = async (url, cacheKey, cacheDuration = 5 * 60 * 1000) => {
@@ -67,16 +82,25 @@ const CryptoPriceAnalyzer = () => {
   };
   
   // Real API call to CoinGecko with caching and rate limit handling
-  const fetchCryptoData = async () => {
+  const fetchCryptoData = async (forceRefresh = false) => {
     setLoading(true);
     setError(null);
     
+    // If force refresh is requested, clear the cache first
+    if (forceRefresh) {
+      clearCache();
+    }
+    
     try {
-      // Fetch current prices with caching
-      const currentPrices = await fetchWithCache(
+      // Fetch current prices with shorter cache duration (2 minutes)
+      const currentPricesData = await fetchWithCache(
         '/api/coingecko/api/v3/simple/price?ids=bitcoin,ethereum,ripple&vs_currencies=usd&include_24hr_change=true',
-        'crypto-analyzer-current-prices'
+        'crypto-analyzer-current-prices',
+        2 * 60 * 1000 // 2 minutes cache for current prices
       );
+      
+      // Store current prices in state
+      setCurrentPrices(currentPricesData);
       
       // Fetch historical data for the past 30 days
       const now = new Date();
@@ -144,7 +168,7 @@ const CryptoPriceAnalyzer = () => {
         
         // Calculate ratios
         const ethBtcRatio = ethPrice / btcPrice;
-        const xrpBtcRatio = (xrpPrice / btcPrice) * 100000; // Scale for better visualization
+        const xrpBtcRatio = (xrpPrice / btcPrice) * 1000; // Scale for better visualization (reduced from 100k to 1k for more precision)
         
         processedData.push({
           date: date.toISOString().split('T')[0],
@@ -159,6 +183,31 @@ const CryptoPriceAnalyzer = () => {
       
       // Sort by date ascending
       processedData.sort((a, b) => a.timestamp - b.timestamp);
+      
+      // Add current price as the final point if available
+      if (currentPricesData.bitcoin?.usd && currentPricesData.ethereum?.usd && currentPricesData.ripple?.usd) {
+        const currentTimestamp = new Date().getTime();
+        const btcPrice = currentPricesData.bitcoin.usd;
+        const ethPrice = currentPricesData.ethereum.usd;
+        const xrpPrice = currentPricesData.ripple.usd;
+        
+        // Calculate ratios
+        const ethBtcRatio = ethPrice / btcPrice;
+        const xrpBtcRatio = (xrpPrice / btcPrice) * 1000; // Scale for better visualization
+        
+        // Add current price data point
+        processedData.push({
+          date: new Date().toISOString().split('T')[0],
+          timestamp: currentTimestamp,
+          btcPrice: btcPrice,
+          ethPrice: ethPrice,
+          xrpPrice: xrpPrice,
+          ethBtcRatio: ethBtcRatio,
+          xrpBtcRatio: xrpBtcRatio,
+        });
+        
+        console.log('Added current price as final data point');
+      }
       
       setData(processedData);
       setLastUpdate(new Date());
@@ -403,7 +452,13 @@ const CryptoPriceAnalyzer = () => {
                     color: '#F9FAFB'
                   }}
                   formatter={(value, name) => [
-                    typeof value === 'number' ? value.toFixed(name === 'ETH/BTC' ? 4 : 0) : value,
+                    typeof value === 'number' 
+                      ? (name === 'ETH/BTC' 
+                          ? value.toFixed(4) 
+                          : name === 'XRP/BTC (×1000)' 
+                            ? value.toFixed(3) 
+                            : value.toFixed(0))
+                      : value,
                     name
                   ]}
                 />
@@ -421,7 +476,7 @@ const CryptoPriceAnalyzer = () => {
                   dataKey="xrpBtcRatio" 
                   stroke="#EA580C" 
                   strokeWidth={2}
-                  name="XRP/BTC (×100k)"
+                  name="XRP/BTC (×1000)"
                   dot={false}
                 />
               </LineChart>
@@ -433,56 +488,84 @@ const CryptoPriceAnalyzer = () => {
         <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
           <h3 className="text-xl font-semibold text-white mb-4">Current Prices</h3>
           <div className="grid md:grid-cols-3 gap-6">
-            {data.length > 0 && (
-              <>
-                <div className="text-center">
-                  <div className="w-12 h-12 bg-yellow-600 rounded-full flex items-center justify-center mx-auto mb-2">
-                    <span className="text-white font-bold">BTC</span>
-                  </div>
-                  <p className="text-slate-400 text-sm">Bitcoin</p>
-                  <p className="text-2xl font-bold text-white">
-                    ${data[data.length - 1].btcPrice.toLocaleString()}
-                  </p>
+            <>
+              <div className="text-center">
+                <div className="w-12 h-12 bg-yellow-600 rounded-full flex items-center justify-center mx-auto mb-2">
+                  <span className="text-white font-bold">BTC</span>
                 </div>
-                <div className="text-center">
-                  <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-2">
-                    <span className="text-white font-bold">ETH</span>
-                  </div>
-                  <p className="text-slate-400 text-sm">Ethereum</p>
-                  <p className="text-2xl font-bold text-white">
-                    ${data[data.length - 1].ethPrice.toLocaleString()}
+                <p className="text-slate-400 text-sm">Bitcoin</p>
+                <p className="text-2xl font-bold text-white">
+                  ${currentPrices.bitcoin?.usd ? currentPrices.bitcoin.usd.toLocaleString() : "Loading..."}
+                </p>
+                {currentPrices.bitcoin?.usd_24h_change && (
+                  <p className={`text-sm ${currentPrices.bitcoin.usd_24h_change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {currentPrices.bitcoin.usd_24h_change >= 0 ? '↑' : '↓'} 
+                    {Math.abs(currentPrices.bitcoin.usd_24h_change).toFixed(2)}% (24h)
                   </p>
-                  <p className="text-slate-400 text-xs">
-                    {data[data.length - 1].ethBtcRatio.toFixed(4)} BTC
-                  </p>
+                )}
+              </div>
+              <div className="text-center">
+                <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-2">
+                  <span className="text-white font-bold">ETH</span>
                 </div>
-                <div className="text-center">
-                  <div className="w-12 h-12 bg-orange-600 rounded-full flex items-center justify-center mx-auto mb-2">
-                    <span className="text-white font-bold">XRP</span>
-                  </div>
-                  <p className="text-slate-400 text-sm">XRP</p>
-                  <p className="text-2xl font-bold text-white">
-                    ${data[data.length - 1].xrpPrice.toFixed(2)}
+                <p className="text-slate-400 text-sm">Ethereum</p>
+                <p className="text-2xl font-bold text-white">
+                  ${currentPrices.ethereum?.usd ? currentPrices.ethereum.usd.toLocaleString() : "Loading..."}
+                </p>
+                {currentPrices.ethereum?.usd_24h_change && (
+                  <p className={`text-sm ${currentPrices.ethereum.usd_24h_change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {currentPrices.ethereum.usd_24h_change >= 0 ? '↑' : '↓'} 
+                    {Math.abs(currentPrices.ethereum.usd_24h_change).toFixed(2)}% (24h)
                   </p>
-                  <p className="text-slate-400 text-xs">
-                    {(data[data.length - 1].xrpBtcRatio / 100000).toFixed(8)} BTC
+                )}
+                {data.length > 0 && (
+                  <p className="text-slate-400 text-xs mt-1">
+                    {(currentPrices.ethereum?.usd / currentPrices.bitcoin?.usd).toFixed(4)} BTC
                   </p>
+                )}
+              </div>
+              <div className="text-center">
+                <div className="w-12 h-12 bg-orange-600 rounded-full flex items-center justify-center mx-auto mb-2">
+                  <span className="text-white font-bold">XRP</span>
                 </div>
-              </>
-            )}
+                <p className="text-slate-400 text-sm">XRP</p>
+                <p className="text-2xl font-bold text-white">
+                  ${currentPrices.ripple?.usd ? currentPrices.ripple.usd.toLocaleString() : "Loading..."}
+                </p>
+                {currentPrices.ripple?.usd_24h_change && (
+                  <p className={`text-sm ${currentPrices.ripple.usd_24h_change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {currentPrices.ripple.usd_24h_change >= 0 ? '↑' : '↓'} 
+                    {Math.abs(currentPrices.ripple.usd_24h_change).toFixed(2)}% (24h)
+                  </p>
+                )}
+                <p className="text-slate-400 text-xs mt-1">
+                  {currentPrices.ripple?.usd && currentPrices.bitcoin?.usd ? (
+                    <>
+                      {(currentPrices.ripple.usd / currentPrices.bitcoin.usd).toFixed(8)} BTC
+                      <span className="ml-1">
+                        (×1000: {((currentPrices.ripple.usd / currentPrices.bitcoin.usd) * 1000).toFixed(3)})
+                      </span>
+                    </>
+                  ) : "Loading..."}
+                </p>
+              </div>
+            </>
           </div>
         </div>
 
         {/* Refresh Button */}
         <div className="text-center mt-8">
           <button 
-            onClick={fetchCryptoData}
+            onClick={() => fetchCryptoData(true)} // Force refresh with cache clearing
             disabled={loading}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-8 py-3 rounded-lg transition-colors flex items-center gap-2 mx-auto"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh Data
           </button>
+          <p className="text-slate-400 text-xs mt-2">
+            Refreshing will clear the cache and fetch the latest data
+          </p>
         </div>
       </div>
     </div>
