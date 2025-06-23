@@ -7,6 +7,7 @@ This repository contains a Dockerized version of the Crypto Price Analyzer appli
 - Real-time price tracking for Bitcoin, Ethereum, and XRP
 - Price comparison charts and ratio analysis
 - Trading recommendations based on cryptocurrency performance
+- Configurable auto-refresh intervals (5 minutes, 15 minutes, 30 minutes, 1 hour, 3 hours)
 - Proxy configuration for CoinGecko API to avoid CORS issues
 
 ## Prerequisites
@@ -49,7 +50,7 @@ The Dockerfile uses a multi-stage build process:
 
 1. **Build Stage**: Uses Red Hat UBI9 Node.js 18 image to:
    - Install dependencies
-   - Build the React application
+   - Build the React application with the title "Crypto Price Analyzer"
 
 2. **Production Stage**: Uses Nginx Alpine image to:
    - Serve the built static files

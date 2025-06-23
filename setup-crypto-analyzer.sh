@@ -30,6 +30,24 @@ cd $PROJECT_DIR
 echo -e "${GREEN}Initializing a new Vite React + TypeScript project...${NC}"
 npm create vite@latest . --template react-ts -- --skip-git
 
+# Update index.html with the correct title
+echo -e "${GREEN}Setting application title...${NC}"
+cat > index.html << 'EOL'
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crypto Price Analyzer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+EOL
+
 # Install dependencies
 echo -e "${GREEN}Installing dependencies...${NC}"
 npm install
@@ -38,7 +56,6 @@ npm install recharts lucide-react
 # Create main App component that uses the CryptoPriceAnalyzer
 echo -e "${GREEN}Creating main App component...${NC}"
 cat > src/App.tsx << 'EOL'
-import React from 'react'
 import './App.css'
 import CryptoPriceAnalyzer from './CryptoPriceAnalyzer'
 

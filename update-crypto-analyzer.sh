@@ -19,6 +19,24 @@ fi
 echo -e "${GREEN}Copying updated crypto price analyzer component...${NC}"
 cp crypto-price-analyzer.tsx $PROJECT_DIR/src/CryptoPriceAnalyzer.tsx
 
+# Update index.html with the correct title
+echo -e "${GREEN}Updating application title...${NC}"
+cat > $PROJECT_DIR/index.html << 'EOL'
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crypto Price Analyzer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+EOL
+
 # Update vite.config.ts to add proxy for CoinGecko API
 echo -e "${GREEN}Updating Vite configuration with proxy for CoinGecko API...${NC}"
 cat > $PROJECT_DIR/vite.config.ts << 'EOL'

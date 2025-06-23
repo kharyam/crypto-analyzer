@@ -1,17 +1,42 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import type { MouseEvent } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, AlertCircle, RefreshCw } from 'lucide-react';
 
+// Define interfaces for type safety
+interface CryptoDataPoint {
+  date: string;
+  timestamp: number;
+  btcPrice: number;
+  ethPrice: number;
+  xrpPrice: number;
+  ethBtcRatio: number;
+  xrpBtcRatio: number;
+}
+
+interface CryptoPrices {
+  bitcoin: { usd: number; usd_24h_change?: number };
+  ethereum: { usd: number; usd_24h_change?: number };
+  ripple: { usd: number; usd_24h_change?: number };
+}
+
+interface Recommendation {
+  action: string;
+  reason: string;
+  color: string;
+  confidence: number;
+}
+
 const CryptoPriceAnalyzer = () => {
-  const [data, setData] = useState([]);
-  const [currentPrices, setCurrentPrices] = useState({
+  const [data, setData] = useState<CryptoDataPoint[]>([]);
+  const [currentPrices, setCurrentPrices] = useState<CryptoPrices>({
     bitcoin: { usd: 0 },
     ethereum: { usd: 0 },
     ripple: { usd: 0 }
   });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [lastUpdate, setLastUpdate] = useState(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   // Clear all cache data
   const clearCache = () => {
@@ -24,7 +49,7 @@ const CryptoPriceAnalyzer = () => {
   };
 
   // Helper function for API calls with caching and retry logic
-  const fetchWithCache = async (url, cacheKey, cacheDuration = 5 * 60 * 1000) => {
+  const fetchWithCache = async (url: string, cacheKey: string, cacheDuration = 5 * 60 * 1000) => {
     // Check if we have cached data and it's still valid
     const cachedData = localStorage.getItem(cacheKey);
     if (cachedData) {
@@ -82,7 +107,7 @@ const CryptoPriceAnalyzer = () => {
   };
   
   // Real API call to CoinGecko with caching and rate limit handling
-  const fetchCryptoData = async (forceRefresh = false) => {
+  const fetchCryptoData = async (forceRefresh = false): Promise<void> => {
     setLoading(true);
     setError(null);
     
@@ -110,7 +135,7 @@ const CryptoPriceAnalyzer = () => {
       
       // Use a single API call to get market data for all three coins
       // This reduces the number of API calls and helps avoid rate limits
-      const marketData = await fetchWithCache(
+      await fetchWithCache(
         `/api/coingecko/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,ripple&order=market_cap_desc&per_page=3&page=1&sparkline=false&price_change_percentage=24h`,
         'crypto-analyzer-market-data'
       );
@@ -142,7 +167,7 @@ const CryptoPriceAnalyzer = () => {
       );
       
       // Process and combine the data
-      const processedData = [];
+      const processedData: CryptoDataPoint[] = [];
       
       // We need to align the timestamps across all three cryptocurrencies
       // Using BTC data as the reference for timestamps
@@ -156,7 +181,7 @@ const CryptoPriceAnalyzer = () => {
         const date = new Date(timestamp);
         
         // Find the closest data points for ETH and XRP by timestamp
-        const findClosestPrice = (priceArray, targetTimestamp) => {
+        const findClosestPrice = (priceArray: [number, number][], targetTimestamp: number): number => {
           return priceArray.reduce((prev, curr) => {
             return (Math.abs(curr[0] - targetTimestamp) < Math.abs(prev[0] - targetTimestamp) ? curr : prev);
           })[1];
@@ -212,12 +237,12 @@ const CryptoPriceAnalyzer = () => {
       setData(processedData);
       setLastUpdate(new Date());
       
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Error fetching data:', err);
-      if (err.message.includes('429')) {
+      if (err instanceof Error && err.message.includes('429')) {
         setError('Rate limit exceeded. Please try again in a few minutes or refresh the page.');
       } else {
-        setError(`Failed to fetch cryptocurrency data: ${err.message}`);
+        setError(`Failed to fetch cryptocurrency data: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
     } finally {
       setLoading(false);
@@ -228,8 +253,8 @@ const CryptoPriceAnalyzer = () => {
     fetchCryptoData();
   }, []);
 
-  const getRecommendation = (asset) => {
-    if (data.length < 2) return { action: 'HOLD', reason: 'Insufficient data', color: 'text-yellow-600' };
+  const getRecommendation = (asset: string): Recommendation => {
+    if (data.length < 2) return { action: 'HOLD', reason: 'Insufficient data', color: 'text-yellow-600', confidence: 60 };
     
     const recent = data.slice(-7); // Last 7 days
     const older = data.slice(-14, -7); // Previous 7 days
@@ -288,7 +313,10 @@ const CryptoPriceAnalyzer = () => {
           <AlertCircle className="w-8 h-8 text-red-400 mx-auto mb-4" />
           <p className="text-white text-lg mb-4">{error}</p>
           <button 
-            onClick={fetchCryptoData}
+            onClick={(e: MouseEvent<HTMLButtonElement>) => {
+              e.preventDefault();
+              fetchCryptoData();
+            }}
             className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg transition-colors"
           >
             Retry
@@ -556,7 +584,10 @@ const CryptoPriceAnalyzer = () => {
         {/* Refresh Button */}
         <div className="text-center mt-8">
           <button 
-            onClick={() => fetchCryptoData(true)} // Force refresh with cache clearing
+            onClick={(e: MouseEvent<HTMLButtonElement>) => {
+              e.preventDefault();
+              fetchCryptoData(true);
+            }} // Force refresh with cache clearing
             disabled={loading}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-8 py-3 rounded-lg transition-colors flex items-center gap-2 mx-auto"
           >
