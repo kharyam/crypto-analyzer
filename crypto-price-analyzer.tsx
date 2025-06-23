@@ -40,6 +40,20 @@ interface AutoRefreshConfig {
   lastRefresh: Date | null;
 }
 
+interface RefreshMode {
+  mode: 'price-only' | 'smart' | 'full';
+  label: string;
+  color: string;
+  description: string;
+}
+
+interface APIBudget {
+  callsThisMinute: number;
+  resetTime: Date;
+  lastRateLimit: Date | null;
+  backoffUntil: Date | null;
+}
+
 // Default configuration
 const DEFAULT_CRYPTOS: CryptoConfig[] = [
   { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', color: '#3B82F6' },
@@ -70,14 +84,64 @@ const POPULAR_CRYPTOS: CryptoConfig[] = [
   { id: 'uniswap', symbol: 'UNI', name: 'Uniswap', color: '#6366F1' }
 ];
 
-// Auto-refresh interval options
+// Auto-refresh interval options with smart API usage
 const REFRESH_INTERVALS = [
-  { value: 5, label: '5 minutes' },
-  { value: 15, label: '15 minutes' },
-  { value: 30, label: '30 minutes' },
-  { value: 60, label: '1 hour' },
-  { value: 180, label: '3 hours' }
+  { value: 5, label: '5 minutes', description: 'Current prices only (charts update less frequently)' },
+  { value: 10, label: '10 minutes', description: 'Current prices only (charts update less frequently)' },
+  { value: 15, label: '15 minutes', description: 'Smart updates (balances freshness and API usage)' },
+  { value: 30, label: '30 minutes', description: 'Smart updates (balances freshness and API usage)' },
+  { value: 60, label: '1 hour', description: 'Full updates (all data refreshed)' },
+  { value: 180, label: '3 hours', description: 'Full updates (all data refreshed)' }
 ];
+
+// API rate limiting constants
+const API_LIMITS = {
+  CALLS_PER_MINUTE: 10,
+  BURST_LIMIT: 3,
+  BACKOFF_DURATION: 5 * 60 * 1000, // 5 minutes
+  RATE_LIMIT_RETRY_DELAY: 60 * 1000 // 1 minute
+};
+
+// Smart refresh mode configuration
+const getRefreshMode = (intervalMinutes: number): RefreshMode => {
+  if (intervalMinutes <= 10) {
+    return {
+      mode: 'price-only',
+      label: 'Price Only',
+      color: 'text-yellow-400',
+      description: 'Updates current prices only to minimize API usage'
+    };
+  }
+  if (intervalMinutes <= 30) {
+    return {
+      mode: 'smart',
+      label: 'Smart',
+      color: 'text-blue-400', 
+      description: 'Balances data freshness with API rate limits'
+    };
+  }
+  return {
+    mode: 'full',
+    label: 'Full',
+    color: 'text-green-400',
+    description: 'Refreshes all data including historical charts'
+  };
+};
+
+// Adaptive cache durations based on refresh interval
+const getCacheDuration = (intervalMinutes: number, dataType: 'current' | 'historical'): number => {
+  if (dataType === 'current') {
+    return intervalMinutes <= 10 ? 2 * 60 * 1000 : 5 * 60 * 1000;
+  }
+  // Historical data cache
+  if (intervalMinutes <= 10) {
+    return 60 * 60 * 1000; // 1 hour cache for short intervals
+  }
+  if (intervalMinutes <= 30) {
+    return 45 * 60 * 1000; // 45 min cache for medium intervals
+  }
+  return 30 * 60 * 1000; // 30 min cache for long intervals
+};
 
 // Countdown display component to prevent chart re-renders
 const CountdownDisplay = memo(({ countdown, formatCountdown }: { countdown: number; formatCountdown: (seconds: number) => string }) => {
@@ -208,6 +272,14 @@ const CryptoPriceAnalyzer = () => {
     lastRefresh: null
   });
   const [refreshCountdown, setRefreshCountdown] = useState<number>(0);
+  const [apiBudget, setApiBudget] = useState<APIBudget>({
+    callsThisMinute: 0,
+    resetTime: new Date(Date.now() + 60000),
+    lastRateLimit: null,
+    backoffUntil: null
+  });
+  const [lastHistoricalUpdate, setLastHistoricalUpdate] = useState<Date | null>(null);
+  const [rotationIndex, setRotationIndex] = useState<number>(0);
   const autoRefreshTimer = useRef<number | null>(null);
   const countdownTimer = useRef<number | null>(null);
 
@@ -372,6 +444,82 @@ const CryptoPriceAnalyzer = () => {
       startAutoRefresh();
     }
   };
+  
+  // Smart API management functions
+  const trackAPICall = () => {
+    const now = new Date();
+    setApiBudget(prev => {
+      // Reset counter if a minute has passed
+      if (now > prev.resetTime) {
+        return {
+          ...prev,
+          callsThisMinute: 1,
+          resetTime: new Date(now.getTime() + 60000)
+        };
+      }
+      return {
+        ...prev,
+        callsThisMinute: prev.callsThisMinute + 1
+      };
+    });
+  };
+  
+  const isRateLimited = (): boolean => {
+    const now = new Date();
+    if (apiBudget.backoffUntil && now < apiBudget.backoffUntil) {
+      return true;
+    }
+    return apiBudget.callsThisMinute >= API_LIMITS.CALLS_PER_MINUTE;
+  };
+  
+  const handleRateLimit = (error: any) => {
+    if (error && ((error as any).status === 429 || error.message?.includes('429'))) {
+      const now = new Date();
+      const backoffUntil = new Date(now.getTime() + API_LIMITS.BACKOFF_DURATION);
+      
+      setApiBudget(prev => ({
+        ...prev,
+        lastRateLimit: now,
+        backoffUntil
+      }));
+      
+      // Auto-adjust to longer interval if using short intervals
+      if (autoRefreshConfig.intervalMinutes <= 10) {
+        const newInterval = 15;
+        setError(`Rate limit detected. Auto-adjusting refresh interval to ${newInterval} minutes.`);
+        setAutoRefreshInterval(newInterval);
+      } else {
+        setError('Rate limit detected. Please try again in a few minutes.');
+      }
+      
+      return true;
+    }
+    return false;
+  };
+  
+  const shouldUpdateHistoricalData = (intervalMinutes: number): boolean => {
+    if (intervalMinutes <= 10) {
+      // For short intervals, only update historical data every 30 minutes
+      if (!lastHistoricalUpdate) return true;
+      const timeSinceUpdate = Date.now() - lastHistoricalUpdate.getTime();
+      return timeSinceUpdate > 30 * 60 * 1000;
+    }
+    
+    if (intervalMinutes <= 30) {
+      // For medium intervals, update every 3rd cycle
+      return rotationIndex % 3 === 0;
+    }
+    
+    // For long intervals, always update
+    return true;
+  };
+  
+  const getNextCryptoForRotation = (): CryptoConfig | null => {
+    if (selectedCryptos.length === 0) return null;
+    const crypto = selectedCryptos[rotationIndex % selectedCryptos.length];
+    setRotationIndex(prev => prev + 1);
+    return crypto;
+  };
 
   // Clear all cache data
   const clearCache = () => {
@@ -387,8 +535,18 @@ const CryptoPriceAnalyzer = () => {
     console.log('Cache cleared');
   };
 
-  // Helper function for API calls with caching and retry logic
-  const fetchWithCache = async (url: string, cacheKey: string, cacheDuration = 5 * 60 * 1000) => {
+  // Enhanced helper function for API calls with smart rate limiting
+  const fetchWithCache = async (url: string, cacheKey: string, cacheDuration = 5 * 60 * 1000, skipRateLimit = false) => {
+    // Check rate limiting first (unless skipped for cached data)
+    if (!skipRateLimit && isRateLimited()) {
+      console.log('Rate limited, using cached data if available');
+      const cachedData = localStorage.getItem(cacheKey);
+      if (cachedData) {
+        const { data } = JSON.parse(cachedData);
+        return data;
+      }
+      throw new Error('Rate limited and no cached data available');
+    }
     // Check if we have cached data and it's still valid
     const cachedData = localStorage.getItem(cacheKey);
     if (cachedData) {
@@ -415,12 +573,18 @@ const CryptoPriceAnalyzer = () => {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
         
+        // Track API call before making request
+        if (!skipRateLimit) {
+          trackAPICall();
+        }
+        
         const response = await fetch(url);
         
         if (response.status === 429) {
-          console.log('Rate limit hit, retrying with backoff...');
-          retries++;
-          continue;
+          console.log('Rate limit hit, handling...');
+          const rateLimitError = new Error('Rate limit exceeded');
+          (rateLimitError as any).status = 429;
+          throw rateLimitError;
         }
         
         if (!response.ok) {
@@ -445,7 +609,7 @@ const CryptoPriceAnalyzer = () => {
     }
   };
   
-  // Real API call to CoinGecko with caching and rate limit handling
+  // Smart API refresh with tiered data fetching
   const fetchCryptoData = async (forceRefresh = false): Promise<void> => {
     setLoading(true);
     setError(null);
@@ -456,140 +620,120 @@ const CryptoPriceAnalyzer = () => {
     }
     
     try {
-      // Build dynamic crypto IDs list
+      const intervalMinutes = autoRefreshConfig.intervalMinutes;
+      const refreshMode = getRefreshMode(intervalMinutes);
+      
+      console.log(`Smart refresh: ${refreshMode.mode} mode (${intervalMinutes}min interval)`);
+      
+      // Always fetch current prices - this is lightweight
       const allCryptoIds = ['bitcoin', ...selectedCryptos.map(c => c.id)];
       const cryptoIdsString = allCryptoIds.join(',');
       
-      // Fetch current prices with shorter cache duration (2 minutes)
       const currentPricesData = await fetchWithCache(
         `/api/coingecko/api/v3/simple/price?ids=${cryptoIdsString}&vs_currencies=usd&include_24hr_change=true`,
         'crypto-analyzer-current-prices',
-        2 * 60 * 1000 // 2 minutes cache for current prices
+        getCacheDuration(intervalMinutes, 'current')
       );
       
-      // Store current prices in state
       setCurrentPrices(currentPricesData);
       
-      // Fetch historical data for the past 30 days
-      const now = new Date();
-      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      const fromTimestamp = Math.floor(thirtyDaysAgo.getTime() / 1000);
-      const toTimestamp = Math.floor(now.getTime() / 1000);
+      // Smart historical data fetching based on interval
+      let shouldFetchHistorical = shouldUpdateHistoricalData(intervalMinutes);
       
-      // Fetch historical data for Bitcoin (base currency)
-      const btcHistorical = await fetchWithCache(
-        `/api/coingecko/api/v3/coins/bitcoin/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
-        'crypto-analyzer-btc-historical',
-        30 * 60 * 1000 // 30 minutes cache
-      );
-      
-      // Fetch historical data for all selected cryptos
-      const cryptoHistoricalData: Record<string, any> = { bitcoin: btcHistorical };
-      
-      for (const crypto of selectedCryptos) {
-        // Add delay between requests to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        const historicalData = await fetchWithCache(
-          `/api/coingecko/api/v3/coins/${crypto.id}/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
-          `crypto-analyzer-${crypto.id}-historical`,
-          30 * 60 * 1000 // 30 minutes cache
-        );
-        
-        cryptoHistoricalData[crypto.id] = historicalData;
+      if (refreshMode.mode === 'price-only') {
+        // For short intervals, only update historical data if it's been a while
+        shouldFetchHistorical = shouldFetchHistorical && (!lastHistoricalUpdate || 
+          Date.now() - lastHistoricalUpdate.getTime() > 30 * 60 * 1000);
       }
       
-      // Process and combine the data
-      const processedData: CryptoDataPoint[] = [];
+      let historicalData: Record<string, any> = {};
       
-      // Using BTC data as the reference for timestamps
-      // Limit to 30 data points for better performance and visualization
-      const step = Math.max(1, Math.floor(btcHistorical.prices.length / 30));
-      
-      // Helper function to find closest price by timestamp
-      const findClosestPrice = (priceArray: [number, number][], targetTimestamp: number): number => {
-        return priceArray.reduce((prev, curr) => {
-          return (Math.abs(curr[0] - targetTimestamp) < Math.abs(prev[0] - targetTimestamp) ? curr : prev);
-        })[1];
-      };
-      
-      for (let i = 0; i < btcHistorical.prices.length; i += step) {
-        if (processedData.length >= 30) break;
+      if (shouldFetchHistorical) {
+        console.log(`Fetching historical data (${refreshMode.mode} mode)`);
         
-        const timestamp = btcHistorical.prices[i][0];
-        const date = new Date(timestamp);
-        const btcPrice = btcHistorical.prices[i][1];
+        const now = new Date();
+        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        const fromTimestamp = Math.floor(thirtyDaysAgo.getTime() / 1000);
+        const toTimestamp = Math.floor(now.getTime() / 1000);
         
-        // Build prices and ratios objects dynamically
-        const prices: Record<string, number> = { bitcoin: btcPrice };
-        const ratios: Record<string, number> = {};
+        // Always fetch BTC historical data
+        const btcHistorical = await fetchWithCache(
+          `/api/coingecko/api/v3/coins/bitcoin/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
+          'crypto-analyzer-btc-historical',
+          getCacheDuration(intervalMinutes, 'historical')
+        );
         
-        for (const crypto of selectedCryptos) {
-          const cryptoHistorical = cryptoHistoricalData[crypto.id];
-          if (cryptoHistorical?.prices) {
-            const cryptoPrice = findClosestPrice(cryptoHistorical.prices, timestamp);
-            prices[crypto.id] = cryptoPrice;
+        historicalData.bitcoin = btcHistorical;
+        
+        if (refreshMode.mode === 'smart') {
+          // For smart mode, rotate which crypto gets updated
+          const cryptoToUpdate = getNextCryptoForRotation();
+          if (cryptoToUpdate) {
+            console.log(`Rotating update: ${cryptoToUpdate.symbol}`);
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting delay
             
-            // Calculate ratio vs BTC with appropriate scaling
-            let ratio = cryptoPrice / btcPrice;
-            // Scale small ratios for better visualization
-            if (ratio < 0.01) {
-              ratio *= 1000;
+            const cryptoHistorical = await fetchWithCache(
+              `/api/coingecko/api/v3/coins/${cryptoToUpdate.id}/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
+              `crypto-analyzer-${cryptoToUpdate.id}-historical`,
+              getCacheDuration(intervalMinutes, 'historical')
+            );
+            
+            historicalData[cryptoToUpdate.id] = cryptoHistorical;
+          }
+          
+          // Load cached data for other cryptos
+          for (const crypto of selectedCryptos) {
+            if (crypto.id !== cryptoToUpdate?.id) {
+              const cached = localStorage.getItem(`crypto-analyzer-${crypto.id}-historical`);
+              if (cached) {
+                const { data } = JSON.parse(cached);
+                historicalData[crypto.id] = data;
+              }
             }
-            ratios[crypto.id] = ratio;
+          }
+        } else if (refreshMode.mode === 'full') {
+          // For full mode, fetch all historical data
+          for (const crypto of selectedCryptos) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting delay
+            
+            const cryptoHistorical = await fetchWithCache(
+              `/api/coingecko/api/v3/coins/${crypto.id}/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
+              `crypto-analyzer-${crypto.id}-historical`,
+              getCacheDuration(intervalMinutes, 'historical')
+            );
+            
+            historicalData[crypto.id] = cryptoHistorical;
           }
         }
         
-        processedData.push({
-          date: date.toISOString().split('T')[0],
-          timestamp: timestamp,
-          btcPrice: btcPrice,
-          prices: prices,
-          ratios: ratios,
+        setLastHistoricalUpdate(new Date());
+      } else {
+        // Load all historical data from cache
+        console.log('Using cached historical data');
+        ['bitcoin', ...selectedCryptos.map(c => c.id)].forEach(cryptoId => {
+          const cached = localStorage.getItem(`crypto-analyzer-${cryptoId}-historical`);
+          if (cached) {
+            const { data } = JSON.parse(cached);
+            historicalData[cryptoId] = data;
+          }
         });
       }
       
-      // Sort by date ascending
-      processedData.sort((a, b) => a.timestamp - b.timestamp);
-      
-      // Add current price as the final point if available
-      if (currentPricesData.bitcoin?.usd) {
-        const currentTimestamp = new Date().getTime();
-        const btcPrice = currentPricesData.bitcoin.usd;
-        const prices: Record<string, number> = { bitcoin: btcPrice };
-        const ratios: Record<string, number> = {};
-        
-        let hasAllCurrentPrices = true;
-        for (const crypto of selectedCryptos) {
-          if (currentPricesData[crypto.id]?.usd) {
-            const cryptoPrice = currentPricesData[crypto.id].usd;
-            prices[crypto.id] = cryptoPrice;
-            
-            let ratio = cryptoPrice / btcPrice;
-            if (ratio < 0.01) {
-              ratio *= 1000;
-            }
-            ratios[crypto.id] = ratio;
-          } else {
-            hasAllCurrentPrices = false;
-            break;
-          }
-        }
-        
-        if (hasAllCurrentPrices) {
-          processedData.push({
-            date: new Date().toISOString().split('T')[0],
-            timestamp: currentTimestamp,
-            btcPrice: btcPrice,
-            prices: prices,
-            ratios: ratios,
-          });
-          
-          console.log('Added current price as final data point');
-        }
+      // Process chart data intelligently
+      if (historicalData.bitcoin?.prices) {
+        // Full chart data processing when we have fresh historical data
+        const processedData = processChartData(historicalData, currentPricesData);
+        setData(processedData);
+      } else if (data.length > 0) {
+        // Preserve existing chart data and update current price point only
+        const updatedData = updateCurrentPriceInExistingData(data, currentPricesData);
+        setData(updatedData);
+        console.log('Preserved historical data, updated current prices only');
+      } else {
+        // No existing data and no historical data - this shouldn't happen in normal operation
+        console.warn('No historical or existing chart data available');
       }
       
-      setData(processedData);
       setLastUpdate(new Date());
       
       // Generate recommendations
@@ -600,14 +744,161 @@ const CryptoPriceAnalyzer = () => {
       
     } catch (err: unknown) {
       console.error('Error fetching data:', err);
-      if (err instanceof Error && err.message.includes('429')) {
-        setError('Rate limit exceeded. Please try again in a few minutes or refresh the page.');
-      } else {
-        setError(`Failed to fetch cryptocurrency data: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      
+      // Handle rate limiting with smart backoff
+      if (handleRateLimit(err)) {
+        return; // Error message set by handleRateLimit
       }
+      
+      setError(`Failed to fetch cryptocurrency data: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setLoading(false);
     }
+  };
+  
+  // Helper function to process chart data
+  const processChartData = (historicalData: Record<string, any>, currentPricesData: CryptoPrices): CryptoDataPoint[] => {
+    const processedData: CryptoDataPoint[] = [];
+    const btcHistorical = historicalData.bitcoin;
+    
+    if (!btcHistorical?.prices) return [];
+    
+    const step = Math.max(1, Math.floor(btcHistorical.prices.length / 30));
+    
+    const findClosestPrice = (priceArray: [number, number][], targetTimestamp: number): number => {
+      return priceArray.reduce((prev, curr) => {
+        return (Math.abs(curr[0] - targetTimestamp) < Math.abs(prev[0] - targetTimestamp) ? curr : prev);
+      })[1];
+    };
+    
+    for (let i = 0; i < btcHistorical.prices.length; i += step) {
+      if (processedData.length >= 30) break;
+      
+      const timestamp = btcHistorical.prices[i][0];
+      const date = new Date(timestamp);
+      const btcPrice = btcHistorical.prices[i][1];
+      
+      const prices: Record<string, number> = { bitcoin: btcPrice };
+      const ratios: Record<string, number> = {};
+      
+      for (const crypto of selectedCryptos) {
+        const cryptoHistorical = historicalData[crypto.id];
+        if (cryptoHistorical?.prices) {
+          const cryptoPrice = findClosestPrice(cryptoHistorical.prices, timestamp);
+          prices[crypto.id] = cryptoPrice;
+          
+          let ratio = cryptoPrice / btcPrice;
+          if (ratio < 0.01) {
+            ratio *= 1000;
+          }
+          ratios[crypto.id] = ratio;
+        }
+      }
+      
+      processedData.push({
+        date: date.toISOString().split('T')[0],
+        timestamp: timestamp,
+        btcPrice: btcPrice,
+        prices: prices,
+        ratios: ratios,
+      });
+    }
+    
+    processedData.sort((a, b) => a.timestamp - b.timestamp);
+    
+    // Add current price as final point
+    if (currentPricesData.bitcoin?.usd) {
+      const currentTimestamp = new Date().getTime();
+      const btcPrice = currentPricesData.bitcoin.usd;
+      const prices: Record<string, number> = { bitcoin: btcPrice };
+      const ratios: Record<string, number> = {};
+      
+      let hasAllCurrentPrices = true;
+      for (const crypto of selectedCryptos) {
+        if (currentPricesData[crypto.id]?.usd) {
+          const cryptoPrice = currentPricesData[crypto.id].usd;
+          prices[crypto.id] = cryptoPrice;
+          
+          let ratio = cryptoPrice / btcPrice;
+          if (ratio < 0.01) {
+            ratio *= 1000;
+          }
+          ratios[crypto.id] = ratio;
+        } else {
+          hasAllCurrentPrices = false;
+          break;
+        }
+      }
+      
+      if (hasAllCurrentPrices) {
+        processedData.push({
+          date: new Date().toISOString().split('T')[0],
+          timestamp: currentTimestamp,
+          btcPrice: btcPrice,
+          prices: prices,
+          ratios: ratios,
+        });
+      }
+    }
+    
+    return processedData;
+  };
+  
+  // Helper function to update only the current price in existing chart data
+  const updateCurrentPriceInExistingData = (existingData: CryptoDataPoint[], currentPricesData: CryptoPrices): CryptoDataPoint[] => {
+    if (!currentPricesData.bitcoin?.usd || existingData.length === 0) {
+      return existingData;
+    }
+    
+    // Remove the last data point if it's a current price point (not historical)
+    let dataToKeep = [...existingData];
+    const lastPoint = dataToKeep[dataToKeep.length - 1];
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    
+    // If the last point is from today and is very recent, it's likely a current price point
+    if (lastPoint.date === today && now.getTime() - lastPoint.timestamp < 24 * 60 * 60 * 1000) {
+      const timeDiff = now.getTime() - lastPoint.timestamp;
+      // If the last point is less than 6 hours old, consider it a current price point
+      if (timeDiff < 6 * 60 * 60 * 1000) {
+        dataToKeep = dataToKeep.slice(0, -1);
+      }
+    }
+    
+    // Add new current price point
+    const currentTimestamp = new Date().getTime();
+    const btcPrice = currentPricesData.bitcoin.usd;
+    const prices: Record<string, number> = { bitcoin: btcPrice };
+    const ratios: Record<string, number> = {};
+    
+    let hasAllCurrentPrices = true;
+    for (const crypto of selectedCryptos) {
+      if (currentPricesData[crypto.id]?.usd) {
+        const cryptoPrice = currentPricesData[crypto.id].usd;
+        prices[crypto.id] = cryptoPrice;
+        
+        let ratio = cryptoPrice / btcPrice;
+        if (ratio < 0.01) {
+          ratio *= 1000;
+        }
+        ratios[crypto.id] = ratio;
+      } else {
+        hasAllCurrentPrices = false;
+        break;
+      }
+    }
+    
+    if (hasAllCurrentPrices) {
+      dataToKeep.push({
+        date: today,
+        timestamp: currentTimestamp,
+        btcPrice: btcPrice,
+        prices: prices,
+        ratios: ratios,
+      });
+    }
+    
+    return dataToKeep;
   };
 
   useEffect(() => {
@@ -766,7 +1057,12 @@ const CryptoPriceAnalyzer = () => {
             <div className="flex items-center gap-2">
               {autoRefreshConfig.enabled && (
                 <div className="text-slate-400 text-xs text-right">
-                  <div>Auto-refresh: ON</div>
+                  <div className="flex items-center gap-1 justify-end">
+                    <span>Auto-refresh:</span>
+                    <span className={`${getRefreshMode(autoRefreshConfig.intervalMinutes).color} font-medium`}>
+                      {getRefreshMode(autoRefreshConfig.intervalMinutes).label}
+                    </span>
+                  </div>
                   <div>Next: <CountdownDisplay countdown={refreshCountdown} formatCountdown={formatCountdown} /></div>
                 </div>
               )}
@@ -835,19 +1131,38 @@ const CryptoPriceAnalyzer = () => {
                 </div>
                 
                 {autoRefreshConfig.enabled && (
-                  <div>
-                    <p className="text-slate-300 text-sm mb-2">Refresh interval:</p>
-                    <select
-                      value={autoRefreshConfig.intervalMinutes}
-                      onChange={(e) => setAutoRefreshInterval(Number(e.target.value))}
-                      className="bg-slate-700 text-white rounded-lg px-3 py-2 text-sm border border-slate-600 focus:border-blue-500 focus:outline-none"
-                    >
-                      {REFRESH_INTERVALS.map(interval => (
-                        <option key={interval.value} value={interval.value}>
-                          {interval.label}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="space-y-3">
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <p className="text-slate-300 text-sm">Refresh interval:</p>
+                        <span className={`text-xs px-2 py-1 rounded-full ${getRefreshMode(autoRefreshConfig.intervalMinutes).color} bg-slate-700`}>
+                          {getRefreshMode(autoRefreshConfig.intervalMinutes).label} Mode
+                        </span>
+                      </div>
+                      <select
+                        value={autoRefreshConfig.intervalMinutes}
+                        onChange={(e) => setAutoRefreshInterval(Number(e.target.value))}
+                        className="bg-slate-700 text-white rounded-lg px-3 py-2 text-sm border border-slate-600 focus:border-blue-500 focus:outline-none w-full"
+                      >
+                        {REFRESH_INTERVALS.map(interval => (
+                          <option key={interval.value} value={interval.value}>
+                            {interval.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    
+                    <div className="bg-slate-700/30 rounded-lg p-3">
+                      <p className="text-slate-400 text-xs mb-1">Current mode:</p>
+                      <p className={`text-xs ${getRefreshMode(autoRefreshConfig.intervalMinutes).color} font-medium`}>
+                        {getRefreshMode(autoRefreshConfig.intervalMinutes).description}
+                      </p>
+                      {apiBudget.backoffUntil && new Date() < apiBudget.backoffUntil && (
+                        <p className="text-orange-400 text-xs mt-2">
+                          ⚠️ Rate limited - backing off until {apiBudget.backoffUntil.toLocaleTimeString()}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1066,10 +1381,17 @@ const CryptoPriceAnalyzer = () => {
           <div className="text-slate-400 text-xs mt-2 space-y-1">
             <p>Refreshing will clear the cache and fetch the latest data</p>
             {autoRefreshConfig.enabled && (
-              <p className="text-blue-400">
-                Auto-refresh: Every {REFRESH_INTERVALS.find(i => i.value === autoRefreshConfig.intervalMinutes)?.label} | 
-                Next: <CountdownDisplay countdown={refreshCountdown} formatCountdown={formatCountdown} />
-              </p>
+              <div className="text-blue-400 space-y-1">
+                <p>
+                  Auto-refresh: Every {REFRESH_INTERVALS.find(i => i.value === autoRefreshConfig.intervalMinutes)?.label} 
+                  <span className={`ml-2 ${getRefreshMode(autoRefreshConfig.intervalMinutes).color}`}>
+                    ({getRefreshMode(autoRefreshConfig.intervalMinutes).label} Mode)
+                  </span>
+                </p>
+                <p>
+                  Next: <CountdownDisplay countdown={refreshCountdown} formatCountdown={formatCountdown} />
+                </p>
+              </div>
             )}
           </div>
         </div>

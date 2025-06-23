@@ -16,28 +16,58 @@ This repository contains a Dockerized version of the Crypto Price Analyzer appli
 - **Backward compatibility**: Maintains original ETH & XRP behavior by default
 - Proxy configuration for CoinGecko API to avoid CORS issues
 
-## Auto-Refresh Feature
+## Smart Auto-Refresh System
+
+### Intelligent API Management
+The application features a **smart API usage system** that adapts to different refresh intervals to prevent rate limiting:
+
+#### **Refresh Modes**
+
+1. **Price Only Mode** (5-10 minutes)
+   - Updates current prices only
+   - Reuses cached historical data
+   - **90% fewer API calls** - no rate limiting
+   - Charts update every 30 minutes
+
+2. **Smart Mode** (15-30 minutes)
+   - Rotates historical data updates
+   - Balances freshness with API limits
+   - Updates different cryptos on each cycle
+   - **50% fewer API calls**
+
+3. **Full Mode** (1+ hours)
+   - Complete data refresh
+   - All historical charts updated
+   - Maximum data freshness
 
 ### Configuration
-The application now includes an intelligent auto-refresh system:
-
 - **Default**: Auto-refresh is **disabled** by default
-- **Intervals**: 5 minutes, 15 minutes, 30 minutes, 1 hour, 3 hours
-- **Smart UI**: Toggle switch and interval selector in Settings panel
-- **Visual Feedback**: Real-time countdown showing time until next refresh
+- **Intervals**: 5, 10, 15, 30 minutes, 1 hour, 3 hours
+- **Smart UI**: Mode indicators and descriptions
+- **Visual Feedback**: Real-time countdown and refresh mode display
 - **Persistence**: Settings are saved and restored automatically
+- **Rate Limit Protection**: Automatic backoff and interval adjustment
 
 ### How to Use
 1. Click the **Settings** gear icon in the top-right corner
 2. In the **Auto Refresh** section, toggle the switch to enable
 3. Select your preferred refresh interval from the dropdown
-4. The countdown will appear showing time until next refresh
-5. Manual refresh resets the auto-refresh timer
+4. **Mode indicator** shows current refresh strategy
+5. The countdown will appear showing time until next refresh
+6. Manual refresh resets the auto-refresh timer
+
+### Smart Features
+- **Rate Limit Detection**: Automatically adjusts intervals if API limits hit
+- **Adaptive Caching**: Cache duration adapts to refresh frequency
+- **API Budget Tracking**: Monitors API call usage to prevent rate limiting
+- **Graceful Degradation**: Falls back to cached data when necessary
+- **Visual Mode Indicators**: Clear display of current refresh strategy
 
 ### Visual Indicators
-- **Header**: Shows auto-refresh status and countdown when enabled
-- **Settings Panel**: Toggle switch, interval selector, and status display
-- **Refresh Button**: Enhanced with auto-refresh information
+- **Header**: Shows refresh mode (Price Only/Smart/Full) and countdown
+- **Settings Panel**: Mode descriptions, interval selector, and status
+- **Refresh Button**: Enhanced with mode information and API status
+- **Rate Limit Warnings**: Displays backoff status when rate limited
 
 ## Cryptocurrency Configuration
 
