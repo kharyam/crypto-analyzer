@@ -11,8 +11,33 @@ This repository contains a Dockerized version of the Crypto Price Analyzer appli
 - **Settings interface**: Easy-to-use configuration panel for selecting cryptocurrencies
 - **URL sharing**: Share configurations via URL parameters (e.g., `?cryptos=ethereum,cardano,solana`)
 - **Popular crypto presets**: Quick selection from popular cryptocurrencies like ADA, SOL, DOT, LINK, etc.
+- **Auto-refresh functionality**: Configurable automatic data updates (5min, 15min, 30min, 1hr, 3hr)
+- **Real-time countdown**: Visual indicators showing time until next refresh
 - **Backward compatibility**: Maintains original ETH & XRP behavior by default
 - Proxy configuration for CoinGecko API to avoid CORS issues
+
+## Auto-Refresh Feature
+
+### Configuration
+The application now includes an intelligent auto-refresh system:
+
+- **Default**: Auto-refresh is **disabled** by default
+- **Intervals**: 5 minutes, 15 minutes, 30 minutes, 1 hour, 3 hours
+- **Smart UI**: Toggle switch and interval selector in Settings panel
+- **Visual Feedback**: Real-time countdown showing time until next refresh
+- **Persistence**: Settings are saved and restored automatically
+
+### How to Use
+1. Click the **Settings** gear icon in the top-right corner
+2. In the **Auto Refresh** section, toggle the switch to enable
+3. Select your preferred refresh interval from the dropdown
+4. The countdown will appear showing time until next refresh
+5. Manual refresh resets the auto-refresh timer
+
+### Visual Indicators
+- **Header**: Shows auto-refresh status and countdown when enabled
+- **Settings Panel**: Toggle switch, interval selector, and status display
+- **Refresh Button**: Enhanced with auto-refresh information
 
 ## Cryptocurrency Configuration
 

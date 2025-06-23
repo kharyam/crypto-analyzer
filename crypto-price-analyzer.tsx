@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import type { MouseEvent } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, AlertCircle, RefreshCw, Settings, Plus, X } from 'lucide-react';
@@ -34,6 +34,12 @@ interface Recommendation {
   symbol: string;
 }
 
+interface AutoRefreshConfig {
+  enabled: boolean;
+  intervalMinutes: number;
+  lastRefresh: Date | null;
+}
+
 // Default configuration
 const DEFAULT_CRYPTOS: CryptoConfig[] = [
   { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', color: '#3B82F6' },
@@ -64,6 +70,127 @@ const POPULAR_CRYPTOS: CryptoConfig[] = [
   { id: 'uniswap', symbol: 'UNI', name: 'Uniswap', color: '#6366F1' }
 ];
 
+// Auto-refresh interval options
+const REFRESH_INTERVALS = [
+  { value: 5, label: '5 minutes' },
+  { value: 15, label: '15 minutes' },
+  { value: 30, label: '30 minutes' },
+  { value: 60, label: '1 hour' },
+  { value: 180, label: '3 hours' }
+];
+
+// Countdown display component to prevent chart re-renders
+const CountdownDisplay = memo(({ countdown, formatCountdown }: { countdown: number; formatCountdown: (seconds: number) => string }) => {
+  return (
+    <span>{formatCountdown(countdown)}</span>
+  );
+});
+
+// Memoized chart components to prevent unnecessary re-renders
+const PriceChart = memo(({ data, selectedCryptos }: { data: CryptoDataPoint[]; selectedCryptos: CryptoConfig[] }) => {
+  return (
+    <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
+      <h3 className="text-xl font-semibold text-white mb-4">Price Comparison (USD)</h3>
+      <ResponsiveContainer width="100%" height={300}>
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+          <XAxis 
+            dataKey="date" 
+            stroke="#9CA3AF"
+            fontSize={12}
+            tickFormatter={(value) => new Date(value).toLocaleDateString()}
+          />
+          <YAxis stroke="#9CA3AF" fontSize={12} />
+          <Tooltip 
+            contentStyle={{ 
+              backgroundColor: '#1F2937', 
+              border: '1px solid #374151',
+              borderRadius: '8px',
+              color: '#F9FAFB'
+            }}
+            formatter={(value, name) => [
+              `$${typeof value === 'number' ? value.toLocaleString() : value}`,
+              name
+            ]}
+          />
+          <Legend />
+          {/* Bitcoin line */}
+          <Line 
+            type="monotone" 
+            dataKey="btcPrice" 
+            stroke={BITCOIN_CONFIG.color}
+            strokeWidth={2}
+            name={BITCOIN_CONFIG.name}
+            dot={false}
+          />
+          {/* Dynamic crypto lines */}
+          {selectedCryptos.map(crypto => (
+            <Line 
+              key={crypto.id}
+              type="monotone" 
+              dataKey={`prices.${crypto.id}`}
+              stroke={crypto.color}
+              strokeWidth={2}
+              name={crypto.name}
+              dot={false}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+});
+
+const RatioChart = memo(({ data, selectedCryptos }: { data: CryptoDataPoint[]; selectedCryptos: CryptoConfig[] }) => {
+  return (
+    <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
+      <h3 className="text-xl font-semibold text-white mb-4">Ratios vs Bitcoin</h3>
+      <ResponsiveContainer width="100%" height={300}>
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+          <XAxis 
+            dataKey="date" 
+            stroke="#9CA3AF"
+            fontSize={12}
+            tickFormatter={(value) => new Date(value).toLocaleDateString()}
+          />
+          <YAxis stroke="#9CA3AF" fontSize={12} />
+          <Tooltip 
+            contentStyle={{ 
+              backgroundColor: '#1F2937', 
+              border: '1px solid #374151',
+              borderRadius: '8px',
+              color: '#F9FAFB'
+            }}
+            formatter={(value, name) => [
+              typeof value === 'number' 
+                ? (value < 1 ? value.toFixed(6) : value.toFixed(3))
+                : value,
+              name
+            ]}
+          />
+          <Legend />
+          {/* Dynamic ratio lines */}
+          {selectedCryptos.map(crypto => {
+            const displayName = `${crypto.symbol}/BTC${data.length > 0 && data[0].ratios[crypto.id] > 1 ? ' (×1000)' : ''}`;
+            return (
+              <Line 
+                key={crypto.id}
+                type="monotone" 
+                dataKey={`ratios.${crypto.id}`}
+                stroke={crypto.color}
+                strokeWidth={2}
+                name={displayName}
+                dot={false}
+              />
+            );
+          })}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+});
+
 const CryptoPriceAnalyzer = () => {
   const [data, setData] = useState<CryptoDataPoint[]>([]);
   const [currentPrices, setCurrentPrices] = useState<CryptoPrices>({
@@ -75,6 +202,14 @@ const CryptoPriceAnalyzer = () => {
   const [selectedCryptos, setSelectedCryptos] = useState<CryptoConfig[]>(DEFAULT_CRYPTOS);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [autoRefreshConfig, setAutoRefreshConfig] = useState<AutoRefreshConfig>({
+    enabled: false,
+    intervalMinutes: 15,
+    lastRefresh: null
+  });
+  const [refreshCountdown, setRefreshCountdown] = useState<number>(0);
+  const autoRefreshTimer = useRef<number | null>(null);
+  const countdownTimer = useRef<number | null>(null);
 
   // Configuration management
   const loadConfiguration = (): CryptoConfig[] => {
@@ -129,6 +264,113 @@ const CryptoPriceAnalyzer = () => {
       ...crypto,
       color: crypto.color || COLOR_PALETTE[index % COLOR_PALETTE.length]
     }));
+  };
+  
+  // Auto-refresh configuration management
+  const loadAutoRefreshConfig = (): AutoRefreshConfig => {
+    const saved = localStorage.getItem('crypto-analyzer-autorefresh');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return {
+          enabled: parsed.enabled || false,
+          intervalMinutes: parsed.intervalMinutes || 15,
+          lastRefresh: parsed.lastRefresh ? new Date(parsed.lastRefresh) : null
+        };
+      } catch (e) {
+        console.warn('Failed to parse auto-refresh configuration:', e);
+      }
+    }
+    return {
+      enabled: false,
+      intervalMinutes: 15,
+      lastRefresh: null
+    };
+  };
+  
+  const saveAutoRefreshConfig = (config: AutoRefreshConfig) => {
+    localStorage.setItem('crypto-analyzer-autorefresh', JSON.stringify(config));
+    setAutoRefreshConfig(config);
+  };
+  
+  const formatCountdown = (seconds: number): string => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  };
+  
+  const startAutoRefresh = () => {
+    if (autoRefreshTimer.current) {
+      clearInterval(autoRefreshTimer.current);
+    }
+    if (countdownTimer.current) {
+      clearInterval(countdownTimer.current);
+    }
+    
+    const intervalMs = autoRefreshConfig.intervalMinutes * 60 * 1000;
+    setRefreshCountdown(autoRefreshConfig.intervalMinutes * 60);
+    
+    // Set up countdown timer (updates every second)
+    countdownTimer.current = setInterval(() => {
+      setRefreshCountdown(prev => {
+        if (prev <= 1) {
+          return autoRefreshConfig.intervalMinutes * 60; // Reset countdown
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    
+    // Set up auto-refresh timer
+    autoRefreshTimer.current = setInterval(() => {
+      fetchCryptoData();
+      saveAutoRefreshConfig({
+        ...autoRefreshConfig,
+        lastRefresh: new Date()
+      });
+    }, intervalMs);
+  };
+  
+  const stopAutoRefresh = () => {
+    if (autoRefreshTimer.current) {
+      clearInterval(autoRefreshTimer.current);
+      autoRefreshTimer.current = null;
+    }
+    if (countdownTimer.current) {
+      clearInterval(countdownTimer.current);
+      countdownTimer.current = null;
+    }
+    setRefreshCountdown(0);
+  };
+  
+  const toggleAutoRefresh = (enabled: boolean) => {
+    const newConfig = {
+      ...autoRefreshConfig,
+      enabled,
+      lastRefresh: enabled ? new Date() : autoRefreshConfig.lastRefresh
+    };
+    
+    saveAutoRefreshConfig(newConfig);
+    
+    if (enabled) {
+      startAutoRefresh();
+    } else {
+      stopAutoRefresh();
+    }
+  };
+  
+  const setAutoRefreshInterval = (intervalMinutes: number) => {
+    const newConfig = {
+      ...autoRefreshConfig,
+      intervalMinutes
+    };
+    
+    saveAutoRefreshConfig(newConfig);
+    
+    // Restart timer with new interval if currently enabled
+    if (autoRefreshConfig.enabled) {
+      stopAutoRefresh();
+      startAutoRefresh();
+    }
   };
 
   // Clear all cache data
@@ -373,6 +615,10 @@ const CryptoPriceAnalyzer = () => {
     const config = loadConfiguration();
     const configWithColors = assignColors(config);
     setSelectedCryptos(configWithColors);
+    
+    // Load auto-refresh configuration
+    const autoRefreshConfig = loadAutoRefreshConfig();
+    setAutoRefreshConfig(autoRefreshConfig);
   }, []);
   
   useEffect(() => {
@@ -381,6 +627,20 @@ const CryptoPriceAnalyzer = () => {
       fetchCryptoData();
     }
   }, [selectedCryptos]);
+  
+  useEffect(() => {
+    // Manage auto-refresh timer
+    if (autoRefreshConfig.enabled) {
+      startAutoRefresh();
+    } else {
+      stopAutoRefresh();
+    }
+    
+    // Cleanup on unmount
+    return () => {
+      stopAutoRefresh();
+    };
+  }, [autoRefreshConfig.enabled, autoRefreshConfig.intervalMinutes]);
 
   const getRecommendation = (cryptoId: string, symbol: string): Recommendation => {
     if (data.length < 2) {
@@ -503,13 +763,21 @@ const CryptoPriceAnalyzer = () => {
                 </p>
               )}
             </div>
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="bg-slate-700 hover:bg-slate-600 text-white p-2 rounded-lg transition-colors"
-              title="Configure Cryptocurrencies"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              {autoRefreshConfig.enabled && (
+                <div className="text-slate-400 text-xs text-right">
+                  <div>Auto-refresh: ON</div>
+                  <div>Next: <CountdownDisplay countdown={refreshCountdown} formatCountdown={formatCountdown} /></div>
+                </div>
+              )}
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className="bg-slate-700 hover:bg-slate-600 text-white p-2 rounded-lg transition-colors flex-shrink-0"
+                title="Settings"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -517,7 +785,7 @@ const CryptoPriceAnalyzer = () => {
         {showSettings && (
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700 mb-8">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-semibold text-white">Configure Cryptocurrencies</h3>
+              <h3 className="text-xl font-semibold text-white">Settings</h3>
               <button
                 onClick={() => setShowSettings(false)}
                 className="text-slate-400 hover:text-white transition-colors"
@@ -526,7 +794,67 @@ const CryptoPriceAnalyzer = () => {
               </button>
             </div>
             
+            {/* Auto Refresh Section */}
+            <div className="mb-6 border-b border-slate-600 pb-4">
+              <h4 className="text-lg font-medium text-white mb-3">Auto Refresh</h4>
+              <div className="space-y-4">
+                <div className="flex items-start justify-between">
+                  <div style={{ flexGrow: 1, marginRight: '16px' }}>
+                    <p className="text-slate-300 text-sm">Enable automatic data refresh</p>
+                    {autoRefreshConfig.enabled && (
+                      <p className="text-slate-400 text-xs mt-1">
+                        Next refresh in: <CountdownDisplay countdown={refreshCountdown} formatCountdown={formatCountdown} />
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => toggleAutoRefresh(!autoRefreshConfig.enabled)}
+                    className={`relative inline-flex items-center rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${
+                      autoRefreshConfig.enabled ? 'bg-blue-600' : 'bg-slate-600'
+                    }`}
+                    style={{ 
+                      width: '44px', 
+                      height: '24px',
+                      minWidth: '44px',
+                      flexShrink: 0
+                    }}
+                    type="button"
+                    role="switch"
+                    aria-checked={autoRefreshConfig.enabled}
+                    aria-label="Toggle auto-refresh"
+                  >
+                    <span
+                      className="inline-block rounded-full bg-white shadow-lg transition-transform duration-200 ease-in-out"
+                      style={{
+                        width: '16px',
+                        height: '16px',
+                        transform: autoRefreshConfig.enabled ? 'translateX(24px)' : 'translateX(4px)'
+                      }}
+                    />
+                  </button>
+                </div>
+                
+                {autoRefreshConfig.enabled && (
+                  <div>
+                    <p className="text-slate-300 text-sm mb-2">Refresh interval:</p>
+                    <select
+                      value={autoRefreshConfig.intervalMinutes}
+                      onChange={(e) => setAutoRefreshInterval(Number(e.target.value))}
+                      className="bg-slate-700 text-white rounded-lg px-3 py-2 text-sm border border-slate-600 focus:border-blue-500 focus:outline-none"
+                    >
+                      {REFRESH_INTERVALS.map(interval => (
+                        <option key={interval.value} value={interval.value}>
+                          {interval.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </div>
+            
             <div className="mb-4">
+              <h4 className="text-lg font-medium text-white mb-3">Cryptocurrency Selection</h4>
               <p className="text-slate-300 mb-3">Selected cryptocurrencies to compare with Bitcoin:</p>
               <div className="flex flex-wrap gap-2 mb-4">
                 {selectedCryptos.map((crypto, index) => (
@@ -651,103 +979,8 @@ const CryptoPriceAnalyzer = () => {
 
         {/* Charts */}
         <div className="grid lg:grid-cols-2 gap-6 mb-8">
-          {/* Price Chart */}
-          <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
-            <h3 className="text-xl font-semibold text-white mb-4">Price Comparison (USD)</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis 
-                  dataKey="date" 
-                  stroke="#9CA3AF"
-                  fontSize={12}
-                  tickFormatter={(value) => new Date(value).toLocaleDateString()}
-                />
-                <YAxis stroke="#9CA3AF" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: '#1F2937', 
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
-                    color: '#F9FAFB'
-                  }}
-                  formatter={(value, name) => [
-                    `$${typeof value === 'number' ? value.toLocaleString() : value}`,
-                    name
-                  ]}
-                />
-                <Legend />
-                {/* Bitcoin line */}
-                <Line 
-                  type="monotone" 
-                  dataKey="btcPrice" 
-                  stroke={BITCOIN_CONFIG.color}
-                  strokeWidth={2}
-                  name={BITCOIN_CONFIG.name}
-                  dot={false}
-                />
-                {/* Dynamic crypto lines */}
-                {selectedCryptos.map(crypto => (
-                  <Line 
-                    key={crypto.id}
-                    type="monotone" 
-                    dataKey={`prices.${crypto.id}`}
-                    stroke={crypto.color}
-                    strokeWidth={2}
-                    name={crypto.name}
-                    dot={false}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Ratio Chart */}
-          <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
-            <h3 className="text-xl font-semibold text-white mb-4">Ratios vs Bitcoin</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis 
-                  dataKey="date" 
-                  stroke="#9CA3AF"
-                  fontSize={12}
-                  tickFormatter={(value) => new Date(value).toLocaleDateString()}
-                />
-                <YAxis stroke="#9CA3AF" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: '#1F2937', 
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
-                    color: '#F9FAFB'
-                  }}
-                  formatter={(value, name) => [
-                    typeof value === 'number' 
-                      ? (value < 1 ? value.toFixed(6) : value.toFixed(3))
-                      : value,
-                    name
-                  ]}
-                />
-                <Legend />
-                {/* Dynamic ratio lines */}
-                {selectedCryptos.map(crypto => {
-                  const displayName = `${crypto.symbol}/BTC${data.length > 0 && data[0].ratios[crypto.id] > 1 ? ' (×1000)' : ''}`;
-                  return (
-                    <Line 
-                      key={crypto.id}
-                      type="monotone" 
-                      dataKey={`ratios.${crypto.id}`}
-                      stroke={crypto.color}
-                      strokeWidth={2}
-                      name={displayName}
-                      dot={false}
-                    />
-                  );
-                })}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          <PriceChart data={data} selectedCryptos={selectedCryptos} />
+          <RatioChart data={data} selectedCryptos={selectedCryptos} />
         </div>
 
         {/* Current Prices */}
@@ -818,16 +1051,27 @@ const CryptoPriceAnalyzer = () => {
             onClick={(e: MouseEvent<HTMLButtonElement>) => {
               e.preventDefault();
               fetchCryptoData(true);
-            }} // Force refresh with cache clearing
+              if (autoRefreshConfig.enabled) {
+                // Reset the auto-refresh timer after manual refresh
+                stopAutoRefresh();
+                startAutoRefresh();
+              }
+            }}
             disabled={loading}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-8 py-3 rounded-lg transition-colors flex items-center gap-2 mx-auto"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh Data
           </button>
-          <p className="text-slate-400 text-xs mt-2">
-            Refreshing will clear the cache and fetch the latest data
-          </p>
+          <div className="text-slate-400 text-xs mt-2 space-y-1">
+            <p>Refreshing will clear the cache and fetch the latest data</p>
+            {autoRefreshConfig.enabled && (
+              <p className="text-blue-400">
+                Auto-refresh: Every {REFRESH_INTERVALS.find(i => i.value === autoRefreshConfig.intervalMinutes)?.label} | 
+                Next: <CountdownDisplay countdown={refreshCountdown} formatCountdown={formatCountdown} />
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>
