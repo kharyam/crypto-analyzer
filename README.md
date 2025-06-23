@@ -1,14 +1,42 @@
 # Crypto Price Analyzer Docker Setup
 
-This repository contains a Dockerized version of the Crypto Price Analyzer application, which provides real-time cryptocurrency price analysis and trading recommendations.
+This repository contains a Dockerized version of the Crypto Price Analyzer application, which provides real-time cryptocurrency price analysis and trading recommendations. The application now supports **configurable cryptocurrency selection** - you can analyze any supported cryptocurrencies relative to Bitcoin!
 
 ## Features
 
-- Real-time price tracking for Bitcoin, Ethereum, and XRP
-- Price comparison charts and ratio analysis
+- **Configurable cryptocurrency selection**: Choose any cryptocurrencies to compare against Bitcoin
+- Real-time price tracking with dynamic crypto support (defaults to Ethereum and XRP)
+- Price comparison charts and ratio analysis for selected cryptocurrencies
 - Trading recommendations based on cryptocurrency performance
-- Configurable auto-refresh intervals (5 minutes, 15 minutes, 30 minutes, 1 hour, 3 hours)
+- **Settings interface**: Easy-to-use configuration panel for selecting cryptocurrencies
+- **URL sharing**: Share configurations via URL parameters (e.g., `?cryptos=ethereum,cardano,solana`)
+- **Popular crypto presets**: Quick selection from popular cryptocurrencies like ADA, SOL, DOT, LINK, etc.
+- **Backward compatibility**: Maintains original ETH & XRP behavior by default
 - Proxy configuration for CoinGecko API to avoid CORS issues
+
+## Cryptocurrency Configuration
+
+### Default Behavior
+By default, the application analyzes **Ethereum (ETH)** and **XRP** relative to Bitcoin, maintaining the original functionality.
+
+### Configuration Options
+
+1. **Settings Panel**: Click the gear icon in the top-right to open the configuration panel
+2. **URL Parameters**: Add `?cryptos=ethereum,cardano,solana` to the URL
+3. **Local Storage**: Your selections are automatically saved for future visits
+
+### Supported Cryptocurrencies
+The application includes presets for popular cryptocurrencies:
+- Ethereum (ETH), XRP, Cardano (ADA), Solana (SOL)
+- Polkadot (DOT), Chainlink (LINK), Litecoin (LTC)
+- Polygon (MATIC), Avalanche (AVAX), Uniswap (UNI)
+- And many more!
+
+### Example URLs
+- Default: `http://localhost:8080` (ETH & XRP)
+- DeFi tokens: `http://localhost:8080?cryptos=ethereum,uniswap,chainlink`
+- Layer 1s: `http://localhost:8080?cryptos=ethereum,cardano,solana,polkadot`
+- Custom mix: `http://localhost:8080?cryptos=ripple,litecoin,avalanche-2`
 
 ## Prerequisites
 

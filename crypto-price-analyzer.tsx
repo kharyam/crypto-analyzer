@@ -1,23 +1,28 @@
 import { useState, useEffect } from 'react';
 import type { MouseEvent } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { TrendingUp, TrendingDown, AlertCircle, RefreshCw } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertCircle, RefreshCw, Settings, Plus, X } from 'lucide-react';
 
 // Define interfaces for type safety
+interface CryptoConfig {
+  id: string; // CoinGecko ID
+  symbol: string; // Display symbol
+  name: string; // Display name
+  color: string; // Chart/UI color
+  icon?: string; // Optional icon identifier
+}
+
 interface CryptoDataPoint {
   date: string;
   timestamp: number;
   btcPrice: number;
-  ethPrice: number;
-  xrpPrice: number;
-  ethBtcRatio: number;
-  xrpBtcRatio: number;
+  prices: Record<string, number>; // Dynamic crypto prices
+  ratios: Record<string, number>; // Dynamic ratios vs BTC
 }
 
 interface CryptoPrices {
   bitcoin: { usd: number; usd_24h_change?: number };
-  ethereum: { usd: number; usd_24h_change?: number };
-  ripple: { usd: number; usd_24h_change?: number };
+  [cryptoId: string]: { usd: number; usd_24h_change?: number };
 }
 
 interface Recommendation {
@@ -25,26 +30,118 @@ interface Recommendation {
   reason: string;
   color: string;
   confidence: number;
+  cryptoId: string;
+  symbol: string;
 }
+
+// Default configuration
+const DEFAULT_CRYPTOS: CryptoConfig[] = [
+  { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', color: '#3B82F6' },
+  { id: 'ripple', symbol: 'XRP', name: 'XRP', color: '#EA580C' }
+];
+
+const BITCOIN_CONFIG: CryptoConfig = {
+  id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', color: '#F59E0B'
+};
+
+// Color palette for additional cryptos
+const COLOR_PALETTE = [
+  '#10B981', '#8B5CF6', '#F59E0B', '#EF4444', '#06B6D4', 
+  '#84CC16', '#F97316', '#EC4899', '#6366F1', '#14B8A6'
+];
+
+// Popular crypto options for selection
+const POPULAR_CRYPTOS: CryptoConfig[] = [
+  { id: 'ethereum', symbol: 'ETH', name: 'Ethereum', color: '#3B82F6' },
+  { id: 'ripple', symbol: 'XRP', name: 'XRP', color: '#EA580C' },
+  { id: 'cardano', symbol: 'ADA', name: 'Cardano', color: '#10B981' },
+  { id: 'solana', symbol: 'SOL', name: 'Solana', color: '#8B5CF6' },
+  { id: 'polkadot', symbol: 'DOT', name: 'Polkadot', color: '#EF4444' },
+  { id: 'chainlink', symbol: 'LINK', name: 'Chainlink', color: '#06B6D4' },
+  { id: 'litecoin', symbol: 'LTC', name: 'Litecoin', color: '#84CC16' },
+  { id: 'polygon', symbol: 'MATIC', name: 'Polygon', color: '#F97316' },
+  { id: 'avalanche-2', symbol: 'AVAX', name: 'Avalanche', color: '#EC4899' },
+  { id: 'uniswap', symbol: 'UNI', name: 'Uniswap', color: '#6366F1' }
+];
 
 const CryptoPriceAnalyzer = () => {
   const [data, setData] = useState<CryptoDataPoint[]>([]);
   const [currentPrices, setCurrentPrices] = useState<CryptoPrices>({
-    bitcoin: { usd: 0 },
-    ethereum: { usd: 0 },
-    ripple: { usd: 0 }
+    bitcoin: { usd: 0 }
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [selectedCryptos, setSelectedCryptos] = useState<CryptoConfig[]>(DEFAULT_CRYPTOS);
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+
+  // Configuration management
+  const loadConfiguration = (): CryptoConfig[] => {
+    // Check URL parameters first
+    const urlParams = new URLSearchParams(window.location.search);
+    const cryptosParam = urlParams.get('cryptos');
+    
+    if (cryptosParam) {
+      const cryptoIds = cryptosParam.split(',');
+      const urlCryptos = cryptoIds.map(id => 
+        POPULAR_CRYPTOS.find(crypto => crypto.id === id.trim())
+      ).filter(Boolean) as CryptoConfig[];
+      
+      if (urlCryptos.length > 0) {
+        return urlCryptos;
+      }
+    }
+    
+    // Check localStorage
+    const savedConfig = localStorage.getItem('crypto-analyzer-config');
+    if (savedConfig) {
+      try {
+        const parsed = JSON.parse(savedConfig);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (e) {
+        console.warn('Failed to parse saved configuration:', e);
+      }
+    }
+    
+    // Return default
+    return DEFAULT_CRYPTOS;
+  };
+  
+  const saveConfiguration = (cryptos: CryptoConfig[]) => {
+    localStorage.setItem('crypto-analyzer-config', JSON.stringify(cryptos));
+    setSelectedCryptos(cryptos);
+    
+    // Update URL without reload
+    const url = new URL(window.location.href);
+    if (cryptos.length > 0) {
+      url.searchParams.set('cryptos', cryptos.map(c => c.id).join(','));
+    } else {
+      url.searchParams.delete('cryptos');
+    }
+    window.history.replaceState({}, '', url.toString());
+  };
+  
+  const assignColors = (cryptos: CryptoConfig[]): CryptoConfig[] => {
+    return cryptos.map((crypto, index) => ({
+      ...crypto,
+      color: crypto.color || COLOR_PALETTE[index % COLOR_PALETTE.length]
+    }));
+  };
 
   // Clear all cache data
   const clearCache = () => {
     localStorage.removeItem('crypto-analyzer-current-prices');
     localStorage.removeItem('crypto-analyzer-market-data');
     localStorage.removeItem('crypto-analyzer-btc-historical');
-    localStorage.removeItem('crypto-analyzer-eth-historical');
-    localStorage.removeItem('crypto-analyzer-xrp-historical');
+    
+    // Clear cache for all selected cryptos
+    selectedCryptos.forEach(crypto => {
+      localStorage.removeItem(`crypto-analyzer-${crypto.id}-historical`);
+    });
+    
     console.log('Cache cleared');
   };
 
@@ -117,9 +214,13 @@ const CryptoPriceAnalyzer = () => {
     }
     
     try {
+      // Build dynamic crypto IDs list
+      const allCryptoIds = ['bitcoin', ...selectedCryptos.map(c => c.id)];
+      const cryptoIdsString = allCryptoIds.join(',');
+      
       // Fetch current prices with shorter cache duration (2 minutes)
       const currentPricesData = await fetchWithCache(
-        '/api/coingecko/api/v3/simple/price?ids=bitcoin,ethereum,ripple&vs_currencies=usd&include_24hr_change=true',
+        `/api/coingecko/api/v3/simple/price?ids=${cryptoIdsString}&vs_currencies=usd&include_24hr_change=true`,
         'crypto-analyzer-current-prices',
         2 * 60 * 1000 // 2 minutes cache for current prices
       );
@@ -133,76 +234,76 @@ const CryptoPriceAnalyzer = () => {
       const fromTimestamp = Math.floor(thirtyDaysAgo.getTime() / 1000);
       const toTimestamp = Math.floor(now.getTime() / 1000);
       
-      // Use a single API call to get market data for all three coins
-      // This reduces the number of API calls and helps avoid rate limits
-      await fetchWithCache(
-        `/api/coingecko/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,ripple&order=market_cap_desc&per_page=3&page=1&sparkline=false&price_change_percentage=24h`,
-        'crypto-analyzer-market-data'
-      );
-      
-      // Fetch historical data with caching - we still need separate calls for each coin
-      // but we'll use longer cache durations since historical data doesn't change frequently
+      // Fetch historical data for Bitcoin (base currency)
       const btcHistorical = await fetchWithCache(
         `/api/coingecko/api/v3/coins/bitcoin/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
         'crypto-analyzer-btc-historical',
         30 * 60 * 1000 // 30 minutes cache
       );
       
-      // Add a small delay between requests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Fetch historical data for all selected cryptos
+      const cryptoHistoricalData: Record<string, any> = { bitcoin: btcHistorical };
       
-      const ethHistorical = await fetchWithCache(
-        `/api/coingecko/api/v3/coins/ethereum/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
-        'crypto-analyzer-eth-historical',
-        30 * 60 * 1000 // 30 minutes cache
-      );
-      
-      // Add a small delay between requests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      const xrpHistorical = await fetchWithCache(
-        `/api/coingecko/api/v3/coins/ripple/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
-        'crypto-analyzer-xrp-historical',
-        30 * 60 * 1000 // 30 minutes cache
-      );
+      for (const crypto of selectedCryptos) {
+        // Add delay between requests to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        const historicalData = await fetchWithCache(
+          `/api/coingecko/api/v3/coins/${crypto.id}/market_chart/range?vs_currency=usd&from=${fromTimestamp}&to=${toTimestamp}`,
+          `crypto-analyzer-${crypto.id}-historical`,
+          30 * 60 * 1000 // 30 minutes cache
+        );
+        
+        cryptoHistoricalData[crypto.id] = historicalData;
+      }
       
       // Process and combine the data
       const processedData: CryptoDataPoint[] = [];
       
-      // We need to align the timestamps across all three cryptocurrencies
       // Using BTC data as the reference for timestamps
       // Limit to 30 data points for better performance and visualization
       const step = Math.max(1, Math.floor(btcHistorical.prices.length / 30));
+      
+      // Helper function to find closest price by timestamp
+      const findClosestPrice = (priceArray: [number, number][], targetTimestamp: number): number => {
+        return priceArray.reduce((prev, curr) => {
+          return (Math.abs(curr[0] - targetTimestamp) < Math.abs(prev[0] - targetTimestamp) ? curr : prev);
+        })[1];
+      };
       
       for (let i = 0; i < btcHistorical.prices.length; i += step) {
         if (processedData.length >= 30) break;
         
         const timestamp = btcHistorical.prices[i][0];
         const date = new Date(timestamp);
-        
-        // Find the closest data points for ETH and XRP by timestamp
-        const findClosestPrice = (priceArray: [number, number][], targetTimestamp: number): number => {
-          return priceArray.reduce((prev, curr) => {
-            return (Math.abs(curr[0] - targetTimestamp) < Math.abs(prev[0] - targetTimestamp) ? curr : prev);
-          })[1];
-        };
-        
         const btcPrice = btcHistorical.prices[i][1];
-        const ethPrice = findClosestPrice(ethHistorical.prices, timestamp);
-        const xrpPrice = findClosestPrice(xrpHistorical.prices, timestamp);
         
-        // Calculate ratios
-        const ethBtcRatio = ethPrice / btcPrice;
-        const xrpBtcRatio = (xrpPrice / btcPrice) * 1000; // Scale for better visualization (reduced from 100k to 1k for more precision)
+        // Build prices and ratios objects dynamically
+        const prices: Record<string, number> = { bitcoin: btcPrice };
+        const ratios: Record<string, number> = {};
+        
+        for (const crypto of selectedCryptos) {
+          const cryptoHistorical = cryptoHistoricalData[crypto.id];
+          if (cryptoHistorical?.prices) {
+            const cryptoPrice = findClosestPrice(cryptoHistorical.prices, timestamp);
+            prices[crypto.id] = cryptoPrice;
+            
+            // Calculate ratio vs BTC with appropriate scaling
+            let ratio = cryptoPrice / btcPrice;
+            // Scale small ratios for better visualization
+            if (ratio < 0.01) {
+              ratio *= 1000;
+            }
+            ratios[crypto.id] = ratio;
+          }
+        }
         
         processedData.push({
           date: date.toISOString().split('T')[0],
           timestamp: timestamp,
           btcPrice: btcPrice,
-          ethPrice: ethPrice,
-          xrpPrice: xrpPrice,
-          ethBtcRatio: ethBtcRatio,
-          xrpBtcRatio: xrpBtcRatio,
+          prices: prices,
+          ratios: ratios,
         });
       }
       
@@ -210,32 +311,50 @@ const CryptoPriceAnalyzer = () => {
       processedData.sort((a, b) => a.timestamp - b.timestamp);
       
       // Add current price as the final point if available
-      if (currentPricesData.bitcoin?.usd && currentPricesData.ethereum?.usd && currentPricesData.ripple?.usd) {
+      if (currentPricesData.bitcoin?.usd) {
         const currentTimestamp = new Date().getTime();
         const btcPrice = currentPricesData.bitcoin.usd;
-        const ethPrice = currentPricesData.ethereum.usd;
-        const xrpPrice = currentPricesData.ripple.usd;
+        const prices: Record<string, number> = { bitcoin: btcPrice };
+        const ratios: Record<string, number> = {};
         
-        // Calculate ratios
-        const ethBtcRatio = ethPrice / btcPrice;
-        const xrpBtcRatio = (xrpPrice / btcPrice) * 1000; // Scale for better visualization
+        let hasAllCurrentPrices = true;
+        for (const crypto of selectedCryptos) {
+          if (currentPricesData[crypto.id]?.usd) {
+            const cryptoPrice = currentPricesData[crypto.id].usd;
+            prices[crypto.id] = cryptoPrice;
+            
+            let ratio = cryptoPrice / btcPrice;
+            if (ratio < 0.01) {
+              ratio *= 1000;
+            }
+            ratios[crypto.id] = ratio;
+          } else {
+            hasAllCurrentPrices = false;
+            break;
+          }
+        }
         
-        // Add current price data point
-        processedData.push({
-          date: new Date().toISOString().split('T')[0],
-          timestamp: currentTimestamp,
-          btcPrice: btcPrice,
-          ethPrice: ethPrice,
-          xrpPrice: xrpPrice,
-          ethBtcRatio: ethBtcRatio,
-          xrpBtcRatio: xrpBtcRatio,
-        });
-        
-        console.log('Added current price as final data point');
+        if (hasAllCurrentPrices) {
+          processedData.push({
+            date: new Date().toISOString().split('T')[0],
+            timestamp: currentTimestamp,
+            btcPrice: btcPrice,
+            prices: prices,
+            ratios: ratios,
+          });
+          
+          console.log('Added current price as final data point');
+        }
       }
       
       setData(processedData);
       setLastUpdate(new Date());
+      
+      // Generate recommendations
+      const newRecommendations = selectedCryptos.map(crypto => 
+        getRecommendation(crypto.id, crypto.symbol)
+      );
+      setRecommendations(newRecommendations);
       
     } catch (err: unknown) {
       console.error('Error fetching data:', err);
@@ -250,50 +369,90 @@ const CryptoPriceAnalyzer = () => {
   };
 
   useEffect(() => {
-    fetchCryptoData();
+    // Load configuration on component mount
+    const config = loadConfiguration();
+    const configWithColors = assignColors(config);
+    setSelectedCryptos(configWithColors);
   }, []);
+  
+  useEffect(() => {
+    // Fetch data when selected cryptos change
+    if (selectedCryptos.length > 0) {
+      fetchCryptoData();
+    }
+  }, [selectedCryptos]);
 
-  const getRecommendation = (asset: string): Recommendation => {
-    if (data.length < 2) return { action: 'HOLD', reason: 'Insufficient data', color: 'text-yellow-600', confidence: 60 };
+  const getRecommendation = (cryptoId: string, symbol: string): Recommendation => {
+    if (data.length < 2) {
+      return { 
+        action: 'HOLD', 
+        reason: 'Insufficient data', 
+        color: 'text-yellow-600', 
+        confidence: 60,
+        cryptoId,
+        symbol
+      };
+    }
     
     const recent = data.slice(-7); // Last 7 days
     const older = data.slice(-14, -7); // Previous 7 days
     
-    const recentAvg = recent.reduce((sum, d) => sum + (asset === 'ETH' ? d.ethBtcRatio : d.xrpBtcRatio), 0) / recent.length;
-    const olderAvg = older.reduce((sum, d) => sum + (asset === 'ETH' ? d.ethBtcRatio : d.xrpBtcRatio), 0) / older.length;
+    // Calculate averages for the specific crypto
+    const recentAvg = recent.reduce((sum, d) => {
+      return sum + (d.ratios[cryptoId] || 0);
+    }, 0) / recent.length;
+    
+    const olderAvg = older.reduce((sum, d) => {
+      return sum + (d.ratios[cryptoId] || 0);
+    }, 0) / older.length;
+    
+    if (olderAvg === 0) {
+      return {
+        action: 'HOLD',
+        reason: 'Insufficient historical data',
+        color: 'text-yellow-600',
+        confidence: 50,
+        cryptoId,
+        symbol
+      };
+    }
     
     const change = ((recentAvg - olderAvg) / olderAvg) * 100;
     const latest = data[data.length - 1];
-    const ratioKey = asset === 'ETH' ? 'ethBtcRatio' : 'xrpBtcRatio';
-    const currentRatio = latest[ratioKey];
+    const currentRatio = latest.ratios[cryptoId] || 0;
     
     // Simple strategy: sell if ratio has increased significantly and is above recent average
     if (change > 5 && currentRatio > recentAvg * 1.02) {
       return {
         action: 'SELL',
-        reason: `${asset} is up ${change.toFixed(1)}% vs BTC over the past week and above average`,
+        reason: `${symbol} is up ${change.toFixed(1)}% vs BTC over the past week and above average`,
         color: 'text-green-600',
-        confidence: Math.min(90, 60 + Math.abs(change))
+        confidence: Math.min(90, 60 + Math.abs(change)),
+        cryptoId,
+        symbol
       };
     } else if (change < -5) {
       return {
         action: 'BUY/HOLD',
-        reason: `${asset} is down ${Math.abs(change).toFixed(1)}% vs BTC - may be a buying opportunity`,
+        reason: `${symbol} is down ${Math.abs(change).toFixed(1)}% vs BTC - may be a buying opportunity`,
         color: 'text-blue-600',
-        confidence: Math.min(85, 50 + Math.abs(change))
+        confidence: Math.min(85, 50 + Math.abs(change)),
+        cryptoId,
+        symbol
       };
     } else {
       return {
         action: 'HOLD',
-        reason: `${asset} is relatively stable vs BTC (${change > 0 ? '+' : ''}${change.toFixed(1)}%)`,
+        reason: `${symbol} is relatively stable vs BTC (${change > 0 ? '+' : ''}${change.toFixed(1)}%)`,
         color: 'text-yellow-600',
-        confidence: 60
+        confidence: 60,
+        cryptoId,
+        symbol
       };
     }
   };
 
-  const ethRecommendation = getRecommendation('ETH');
-  const xrpRecommendation = getRecommendation('XRP');
+  // Recommendations are now generated dynamically in fetchCryptoData
 
   if (loading) {
     return (
@@ -330,77 +489,164 @@ const CryptoPriceAnalyzer = () => {
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 p-6">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-white mb-2">Crypto Price Analyzer</h1>
-          <p className="text-slate-300 text-lg">XRP & Ethereum vs Bitcoin Analysis</p>
-          {lastUpdate && (
-            <p className="text-slate-400 text-sm mt-2">
-              Last updated: {lastUpdate.toLocaleString()}
-            </p>
-          )}
+        <div className="text-center mb-8 relative">
+          <div className="flex justify-between items-start mb-4">
+            <div></div>
+            <div className="text-center flex-1">
+              <h1 className="text-4xl font-bold text-white mb-2">Crypto Price Analyzer</h1>
+              <p className="text-slate-300 text-lg">
+                {selectedCryptos.map(c => c.symbol).join(' & ')} vs Bitcoin Analysis
+              </p>
+              {lastUpdate && (
+                <p className="text-slate-400 text-sm mt-2">
+                  Last updated: {lastUpdate.toLocaleString()}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className="bg-slate-700 hover:bg-slate-600 text-white p-2 rounded-lg transition-colors"
+              title="Configure Cryptocurrencies"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* Recommendations */}
-        <div className="grid md:grid-cols-2 gap-6 mb-8">
-          <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
-                <span className="text-white font-bold">ETH</span>
+        {/* Settings Panel */}
+        {showSettings && (
+          <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700 mb-8">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-semibold text-white">Configure Cryptocurrencies</h3>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <p className="text-slate-300 mb-3">Selected cryptocurrencies to compare with Bitcoin:</p>
+              <div className="flex flex-wrap gap-2 mb-4">
+                {selectedCryptos.map((crypto, index) => (
+                  <div key={crypto.id} className="bg-slate-700 rounded-lg px-3 py-2 flex items-center gap-2">
+                    <div 
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: crypto.color }}
+                    ></div>
+                    <span className="text-white text-sm">{crypto.symbol}</span>
+                    <span className="text-slate-400 text-xs">{crypto.name}</span>
+                    <button
+                      onClick={() => {
+                        const newCryptos = selectedCryptos.filter((_, i) => i !== index);
+                        saveConfiguration(newCryptos);
+                      }}
+                      className="text-slate-400 hover:text-red-400 transition-colors ml-2"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
               </div>
-              <div>
-                <h3 className="text-xl font-semibold text-white">Ethereum</h3>
-                <p className="text-slate-400 text-sm">vs Bitcoin</p>
+            </div>
+            
+            <div className="mb-4">
+              <p className="text-slate-300 mb-3">Add cryptocurrency:</p>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+                {POPULAR_CRYPTOS.filter(crypto => 
+                  !selectedCryptos.some(selected => selected.id === crypto.id)
+                ).map(crypto => (
+                  <button
+                    key={crypto.id}
+                    onClick={() => {
+                      const newCryptos = [...selectedCryptos, crypto];
+                      const cryptosWithColors = assignColors(newCryptos);
+                      saveConfiguration(cryptosWithColors);
+                    }}
+                    className="bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-2 text-left transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Plus className="w-3 h-3 text-slate-400" />
+                      <div>
+                        <div className="text-white text-sm font-medium">{crypto.symbol}</div>
+                        <div className="text-slate-400 text-xs">{crypto.name}</div>
+                      </div>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
-            <div className={`flex items-center gap-2 mb-3 ${ethRecommendation.color}`}>
-              {ethRecommendation.action === 'SELL' ? (
-                <TrendingUp className="w-5 h-5" />
-              ) : ethRecommendation.action === 'BUY/HOLD' ? (
-                <TrendingDown className="w-5 h-5" />
-              ) : (
-                <AlertCircle className="w-5 h-5" />
-              )}
-              <span className="font-semibold text-lg">{ethRecommendation.action}</span>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  saveConfiguration(DEFAULT_CRYPTOS);
+                  setShowSettings(false);
+                }}
+                className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Reset to Default
+              </button>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Done
+              </button>
             </div>
-            <p className="text-slate-300 text-sm mb-3">{ethRecommendation.reason}</p>
-            <div className="bg-slate-700 rounded-full h-2 mb-2">
-              <div 
-                className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${ethRecommendation.confidence}%` }}
-              ></div>
-            </div>
-            <p className="text-slate-400 text-xs">Confidence: {ethRecommendation.confidence}%</p>
           </div>
+        )}
 
-          <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 bg-orange-600 rounded-full flex items-center justify-center">
-                <span className="text-white font-bold">XRP</span>
+        {/* Recommendations */}
+        <div className={`grid gap-6 mb-8 ${
+          recommendations.length === 1 ? 'grid-cols-1 max-w-md mx-auto' :
+          recommendations.length === 2 ? 'md:grid-cols-2' :
+          recommendations.length === 3 ? 'md:grid-cols-2 lg:grid-cols-3' :
+          'md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+        }`}>
+          {recommendations.map((recommendation) => {
+            const crypto = selectedCryptos.find(c => c.id === recommendation.cryptoId);
+            if (!crypto) return null;
+            
+            return (
+              <div key={crypto.id} className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
+                <div className="flex items-center gap-3 mb-4">
+                  <div 
+                    className="w-10 h-10 rounded-full flex items-center justify-center"
+                    style={{ backgroundColor: crypto.color }}
+                  >
+                    <span className="text-white font-bold text-sm">{crypto.symbol}</span>
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-semibold text-white">{crypto.name}</h3>
+                    <p className="text-slate-400 text-sm">vs Bitcoin</p>
+                  </div>
+                </div>
+                <div className={`flex items-center gap-2 mb-3 ${recommendation.color}`}>
+                  {recommendation.action === 'SELL' ? (
+                    <TrendingUp className="w-5 h-5" />
+                  ) : recommendation.action === 'BUY/HOLD' ? (
+                    <TrendingDown className="w-5 h-5" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5" />
+                  )}
+                  <span className="font-semibold text-lg">{recommendation.action}</span>
+                </div>
+                <p className="text-slate-300 text-sm mb-3">{recommendation.reason}</p>
+                <div className="bg-slate-700 rounded-full h-2 mb-2">
+                  <div 
+                    className="h-2 rounded-full transition-all duration-500"
+                    style={{ 
+                      width: `${recommendation.confidence}%`,
+                      backgroundColor: crypto.color
+                    }}
+                  ></div>
+                </div>
+                <p className="text-slate-400 text-xs">Confidence: {recommendation.confidence}%</p>
               </div>
-              <div>
-                <h3 className="text-xl font-semibold text-white">XRP</h3>
-                <p className="text-slate-400 text-sm">vs Bitcoin</p>
-              </div>
-            </div>
-            <div className={`flex items-center gap-2 mb-3 ${xrpRecommendation.color}`}>
-              {xrpRecommendation.action === 'SELL' ? (
-                <TrendingUp className="w-5 h-5" />
-              ) : xrpRecommendation.action === 'BUY/HOLD' ? (
-                <TrendingDown className="w-5 h-5" />
-              ) : (
-                <AlertCircle className="w-5 h-5" />
-              )}
-              <span className="font-semibold text-lg">{xrpRecommendation.action}</span>
-            </div>
-            <p className="text-slate-300 text-sm mb-3">{xrpRecommendation.reason}</p>
-            <div className="bg-slate-700 rounded-full h-2 mb-2">
-              <div 
-                className="bg-orange-500 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${xrpRecommendation.confidence}%` }}
-              ></div>
-            </div>
-            <p className="text-slate-400 text-xs">Confidence: {xrpRecommendation.confidence}%</p>
-          </div>
+            );
+          })}
         </div>
 
         {/* Charts */}
@@ -431,30 +677,27 @@ const CryptoPriceAnalyzer = () => {
                   ]}
                 />
                 <Legend />
+                {/* Bitcoin line */}
                 <Line 
                   type="monotone" 
                   dataKey="btcPrice" 
-                  stroke="#F59E0B" 
+                  stroke={BITCOIN_CONFIG.color}
                   strokeWidth={2}
-                  name="Bitcoin"
+                  name={BITCOIN_CONFIG.name}
                   dot={false}
                 />
-                <Line 
-                  type="monotone" 
-                  dataKey="ethPrice" 
-                  stroke="#3B82F6" 
-                  strokeWidth={2}
-                  name="Ethereum"
-                  dot={false}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="xrpPrice" 
-                  stroke="#EA580C" 
-                  strokeWidth={2}
-                  name="XRP"
-                  dot={false}
-                />
+                {/* Dynamic crypto lines */}
+                {selectedCryptos.map(crypto => (
+                  <Line 
+                    key={crypto.id}
+                    type="monotone" 
+                    dataKey={`prices.${crypto.id}`}
+                    stroke={crypto.color}
+                    strokeWidth={2}
+                    name={crypto.name}
+                    dot={false}
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -481,32 +724,27 @@ const CryptoPriceAnalyzer = () => {
                   }}
                   formatter={(value, name) => [
                     typeof value === 'number' 
-                      ? (name === 'ETH/BTC' 
-                          ? value.toFixed(4) 
-                          : name === 'XRP/BTC (×1000)' 
-                            ? value.toFixed(3) 
-                            : value.toFixed(0))
+                      ? (value < 1 ? value.toFixed(6) : value.toFixed(3))
                       : value,
                     name
                   ]}
                 />
                 <Legend />
-                <Line 
-                  type="monotone" 
-                  dataKey="ethBtcRatio" 
-                  stroke="#3B82F6" 
-                  strokeWidth={2}
-                  name="ETH/BTC"
-                  dot={false}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="xrpBtcRatio" 
-                  stroke="#EA580C" 
-                  strokeWidth={2}
-                  name="XRP/BTC (×1000)"
-                  dot={false}
-                />
+                {/* Dynamic ratio lines */}
+                {selectedCryptos.map(crypto => {
+                  const displayName = `${crypto.symbol}/BTC${data.length > 0 && data[0].ratios[crypto.id] > 1 ? ' (×1000)' : ''}`;
+                  return (
+                    <Line 
+                      key={crypto.id}
+                      type="monotone" 
+                      dataKey={`ratios.${crypto.id}`}
+                      stroke={crypto.color}
+                      strokeWidth={2}
+                      name={displayName}
+                      dot={false}
+                    />
+                  );
+                })}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -515,69 +753,62 @@ const CryptoPriceAnalyzer = () => {
         {/* Current Prices */}
         <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700">
           <h3 className="text-xl font-semibold text-white mb-4">Current Prices</h3>
-          <div className="grid md:grid-cols-3 gap-6">
-            <>
-              <div className="text-center">
-                <div className="w-12 h-12 bg-yellow-600 rounded-full flex items-center justify-center mx-auto mb-2">
-                  <span className="text-white font-bold">BTC</span>
-                </div>
-                <p className="text-slate-400 text-sm">Bitcoin</p>
-                <p className="text-2xl font-bold text-white">
-                  ${currentPrices.bitcoin?.usd ? currentPrices.bitcoin.usd.toLocaleString() : "Loading..."}
-                </p>
-                {currentPrices.bitcoin?.usd_24h_change && (
-                  <p className={`text-sm ${currentPrices.bitcoin.usd_24h_change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {currentPrices.bitcoin.usd_24h_change >= 0 ? '↑' : '↓'} 
-                    {Math.abs(currentPrices.bitcoin.usd_24h_change).toFixed(2)}% (24h)
-                  </p>
-                )}
+          <div className={`grid gap-6 ${
+            selectedCryptos.length + 1 <= 3 ? 'md:grid-cols-3' :
+            selectedCryptos.length + 1 <= 4 ? 'md:grid-cols-2 lg:grid-cols-4' :
+            'md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5'
+          }`}>
+            {/* Bitcoin */}
+            <div className="text-center">
+              <div 
+                className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2"
+                style={{ backgroundColor: BITCOIN_CONFIG.color }}
+              >
+                <span className="text-white font-bold">{BITCOIN_CONFIG.symbol}</span>
               </div>
-              <div className="text-center">
-                <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-2">
-                  <span className="text-white font-bold">ETH</span>
-                </div>
-                <p className="text-slate-400 text-sm">Ethereum</p>
-                <p className="text-2xl font-bold text-white">
-                  ${currentPrices.ethereum?.usd ? currentPrices.ethereum.usd.toLocaleString() : "Loading..."}
+              <p className="text-slate-400 text-sm">{BITCOIN_CONFIG.name}</p>
+              <p className="text-2xl font-bold text-white">
+                ${currentPrices.bitcoin?.usd ? currentPrices.bitcoin.usd.toLocaleString() : "Loading..."}
+              </p>
+              {currentPrices.bitcoin?.usd_24h_change && (
+                <p className={`text-sm ${currentPrices.bitcoin.usd_24h_change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {currentPrices.bitcoin.usd_24h_change >= 0 ? '↑' : '↓'} 
+                  {Math.abs(currentPrices.bitcoin.usd_24h_change).toFixed(2)}% (24h)
                 </p>
-                {currentPrices.ethereum?.usd_24h_change && (
-                  <p className={`text-sm ${currentPrices.ethereum.usd_24h_change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {currentPrices.ethereum.usd_24h_change >= 0 ? '↑' : '↓'} 
-                    {Math.abs(currentPrices.ethereum.usd_24h_change).toFixed(2)}% (24h)
+              )}
+            </div>
+            
+            {/* Dynamic crypto prices */}
+            {selectedCryptos.map(crypto => (
+              <div key={crypto.id} className="text-center">
+                <div 
+                  className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2"
+                  style={{ backgroundColor: crypto.color }}
+                >
+                  <span className="text-white font-bold text-sm">{crypto.symbol}</span>
+                </div>
+                <p className="text-slate-400 text-sm">{crypto.name}</p>
+                <p className="text-2xl font-bold text-white">
+                  ${currentPrices[crypto.id]?.usd ? currentPrices[crypto.id].usd.toLocaleString() : "Loading..."}
+                </p>
+                {currentPrices[crypto.id]?.usd_24h_change !== undefined && (
+                  <p className={`text-sm ${currentPrices[crypto.id].usd_24h_change! >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {currentPrices[crypto.id].usd_24h_change! >= 0 ? '↑' : '↓'} 
+                    {Math.abs(currentPrices[crypto.id].usd_24h_change!).toFixed(2)}% (24h)
                   </p>
                 )}
-                {data.length > 0 && (
+                {currentPrices[crypto.id]?.usd && currentPrices.bitcoin?.usd && (
                   <p className="text-slate-400 text-xs mt-1">
-                    {(currentPrices.ethereum?.usd / currentPrices.bitcoin?.usd).toFixed(4)} BTC
-                  </p>
-                )}
-              </div>
-              <div className="text-center">
-                <div className="w-12 h-12 bg-orange-600 rounded-full flex items-center justify-center mx-auto mb-2">
-                  <span className="text-white font-bold">XRP</span>
-                </div>
-                <p className="text-slate-400 text-sm">XRP</p>
-                <p className="text-2xl font-bold text-white">
-                  ${currentPrices.ripple?.usd ? currentPrices.ripple.usd.toLocaleString() : "Loading..."}
-                </p>
-                {currentPrices.ripple?.usd_24h_change && (
-                  <p className={`text-sm ${currentPrices.ripple.usd_24h_change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {currentPrices.ripple.usd_24h_change >= 0 ? '↑' : '↓'} 
-                    {Math.abs(currentPrices.ripple.usd_24h_change).toFixed(2)}% (24h)
-                  </p>
-                )}
-                <p className="text-slate-400 text-xs mt-1">
-                  {currentPrices.ripple?.usd && currentPrices.bitcoin?.usd ? (
-                    <>
-                      {(currentPrices.ripple.usd / currentPrices.bitcoin.usd).toFixed(8)} BTC
+                    {(currentPrices[crypto.id].usd / currentPrices.bitcoin.usd).toFixed(8)} BTC
+                    {(currentPrices[crypto.id].usd / currentPrices.bitcoin.usd) < 0.01 && (
                       <span className="ml-1">
-                        (×1000: {((currentPrices.ripple.usd / currentPrices.bitcoin.usd) * 1000).toFixed(3)})
+                        (×1000: {((currentPrices[crypto.id].usd / currentPrices.bitcoin.usd) * 1000).toFixed(3)})
                       </span>
-                    </>
-                  ) : "Loading..."}
-                </p>
+                    )}
+                  </p>
+                )}
               </div>
-            </>
+            ))}
           </div>
         </div>
 
