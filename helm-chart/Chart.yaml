@@ -1,0 +1,14 @@
+apiVersion: v2
+name: crypto-analyzer
+description: A Helm chart for Crypto Price Analyzer application
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - cryptocurrency
+  - analysis
+  - react
+  - web-application
+maintainers:
+  - name: Crypto Analyzer Team
+    email: support@example.com

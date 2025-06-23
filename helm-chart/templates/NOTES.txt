@@ -1,0 +1,33 @@
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }}
+  $ helm get all {{ .Release.Name }}
+
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+You can access the application by navigating to:
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+You can access the application by navigating to:
+  http://<NODE_IP>:{{ .Values.service.port }}
+{{- else if contains "LoadBalancer" .Values.service.type }}
+You can access the application by navigating to:
+  http://<EXTERNAL_IP>:{{ .Values.service.port }}
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+        You can watch the status by running: kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "crypto-analyzer.fullname" . }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+You can access the application by port-forwarding the service to your local machine:
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "crypto-analyzer.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  
+Then navigate to:
+  http://localhost:{{ .Values.service.port }}
+{{- end }}
+
+The Crypto Price Analyzer provides real-time cryptocurrency price data and analysis for Bitcoin, Ethereum, and XRP.
